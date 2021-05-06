@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -56,6 +57,23 @@ func main() {
 	var err error
 	var destIP net.IP
 	var destPort uint16
+
+	// Check permissions
+	cmd := exec.Command("id", "-u")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 0 = root, 501 = non-root user
+	i, err := strconv.Atoi(string(output[:len(output)-1]))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if i != 0 {
+		log.Fatal("This program must be run as root! (sudo)")
+	}
+
 	// Parse command line flags and arguments
 	flag.Parse()
 	args := flag.Args()
