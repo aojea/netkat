@@ -11,10 +11,10 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -27,10 +27,12 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
 )
 
 const (
-	nicID = 1
+	nicID   = 1
+	bufSize = 4 << 20 // 4MB.
 )
 
 var (
@@ -117,7 +119,7 @@ func main() {
 	// Enable signal handler
 	signalCh := make(chan os.Signal, 2)
 	defer close(signalCh)
-	signal.Notify(signalCh, os.Interrupt, syscall.SIGINT)
+	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
 	go func() {
 		<-signalCh
 		log.Fatal("Exiting: received signal")
@@ -142,30 +144,39 @@ func main() {
 		log.Fatalf("unable to bind to %q: %v", "1", err)
 	}
 
-	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(htons(syscall.ETH_P_ALL)))
+	// https: //github.com/google/gvisor/blob/108410638aa8480e82933870ba8279133f543d2b/test/benchmarks/tcp/tcp_proxy.go
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
 		log.Fatalf("Could not create socket: %s", err.Error())
 	}
-	defer syscall.Close(fd)
+	defer unix.Close(fd)
 
 	if fd < 0 {
 		log.Fatalf("Socket error: return < 0")
 	}
 
-	if err = syscall.SetNonblock(fd, true); err != nil {
-		syscall.Close(fd)
+	if err = unix.SetNonblock(fd, true); err != nil {
 		log.Fatalf("Error setting fd to nonblock: %s", err)
 	}
 
-	ll := syscall.SockaddrLinklayer{
-		Protocol: htons(syscall.ETH_P_ALL),
+	ll := unix.SockaddrLinklayer{
+		Protocol: htons(unix.ETH_P_ALL),
 		Ifindex:  ifaceLink.Attrs().Index,
-		Hatype:   0, // No ARP type.
-		Pkttype:  syscall.PACKET_HOST,
+		Pkttype:  unix.PACKET_HOST,
 	}
 
-	if err := syscall.Bind(fd, &ll); err != nil {
+	if err := unix.Bind(fd, &ll); err != nil {
 		log.Fatalf("unable to bind to %q: %v", "iface.Name", err)
+	}
+
+	// RAW Sockets by default have a very small SO_RCVBUF of 256KB,
+	// up it to at least 4MB to reduce packet drops.
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, bufSize); err != nil {
+		log.Fatalf("setsockopt(..., SO_RCVBUF, %v,..) = %v", bufSize, err)
+	}
+
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, bufSize); err != nil {
+		log.Fatalf("setsockopt(..., SO_SNDBUF, %v,..) = %v", bufSize, err)
 	}
 
 	la := tcpip.LinkAddress(ifaceLink.Attrs().HardwareAddr)
@@ -174,7 +185,15 @@ func main() {
 		FDs:            []int{fd},
 		MTU:            mtu,
 		EthernetHeader: true,
-		Address:        la,
+		Address:        tcpip.LinkAddress(la),
+		// Enable checksum generation as we need to generate valid
+		// checksums for the veth device to deliver our packets to the
+		// peer. But we do want to disable checksum verification as veth
+		// devices do perform GRO and the linux host kernel may not
+		// regenerate valid checksums after GRO.
+		TXChecksumOffload:  false,
+		RXChecksumOffload:  true,
+		PacketDispatchMode: fdbased.RecvMMsg,
 		ClosedFunc: func(e tcpip.Error) {
 			if e != nil {
 				log.Fatalf("File descriptor closed: %v", err)
@@ -190,7 +209,10 @@ func main() {
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{transportProtocol},
 	})
-
+	defer func() {
+		ipstack.Close()
+		ipstack.Wait()
+	}()
 	// Add IPv4 and IPv6 default routes, so all traffic goes through the fake NIC
 	ipv4Subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 4)), tcpip.AddressMask(strings.Repeat("\x00", 4)))
 	ipv6Subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 16)), tcpip.AddressMask(strings.Repeat("\x00", 16)))
@@ -219,6 +241,7 @@ func main() {
 		if !a.IP.IsGlobalUnicast() {
 			continue
 		}
+		log.Printf("Adding address %s", a.IPNet.String())
 		ipstack.AddAddress(nicID, getProtocolNumber(a.IP), ipToStackAddress(a.IP))
 	}
 
@@ -245,6 +268,7 @@ func main() {
 				log.Fatalf("Can't connect to server: %s\n", err)
 			}
 		}
+		log.Printf("Connection established")
 		_, err = io.Copy(conn, os.Stdin)
 		if err != nil {
 			log.Fatalf("Connection error: %s\n", err)
@@ -322,4 +346,55 @@ func ipToStackAddress(ip net.IP) tcpip.Address {
 		return tcpip.Address(ip.To4())
 	}
 	return tcpip.Address(ip)
+}
+
+// DialTCP creates a new TCPConn connected to the specified address
+// with the option of adding a source address and port.
+func DialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
+	// Create TCP endpoint, then connect.
+	var wq waiter.Queue
+	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
+	if err != nil {
+		return nil, errors.New(err.String())
+	}
+
+	// Bind so we can get a port and avoid the kernel RST the connection
+	if laddr != nil {
+		if err := ep.Bind(*laddr); err != nil {
+			return nil, &net.OpError{
+				Op:   "bind",
+				Net:  "udp",
+				Addr: fullToTCPAddr(*laddr),
+				Err:  errors.New(err.String()),
+			}
+		}
+	}
+
+	// Create wait queue entry that notifies a channel.
+	//
+	// We do this unconditionally as Connect will always return an error.
+	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
+	wq.EventRegister(&waitEntry, waiter.WritableEvents)
+	defer wq.EventUnregister(&waitEntry)
+
+	err = ep.Connect(*raddr)
+	if _, ok := err.(*tcpip.ErrConnectStarted); ok {
+		<-notifyCh
+		err = ep.LastError()
+	}
+	if err != nil {
+		ep.Close()
+		return nil, &net.OpError{
+			Op:   "connect",
+			Net:  "tcp",
+			Addr: fullToTCPAddr(*raddr),
+			Err:  errors.New(err.String()),
+		}
+	}
+
+	return gonet.NewTCPConn(&wq, ep), nil
+}
+
+func fullToTCPAddr(addr tcpip.FullAddress) *net.TCPAddr {
+	return &net.TCPAddr{IP: net.IP(addr.Addr), Port: int(addr.Port)}
 }
