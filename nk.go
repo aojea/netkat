@@ -66,7 +66,13 @@ func main() {
 			flag.Usage()
 			os.Exit(1)
 		}
-		destIP = net.ParseIP(args[0])
+		ips, err := net.LookupHost(args[0])
+		if err != nil || len(ips) == 0 {
+			log.Fatalf("Invalid destination Host: %s", args[0])
+		}
+		// use the first IP returned
+		// TODO: revisit in case we want to specify the IP family
+		destIP = net.ParseIP(ips[0])
 		if destIP == nil {
 			log.Fatalf("Invalid destination IP: %s", args[0])
 		}
