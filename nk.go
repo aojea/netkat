@@ -21,6 +21,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/link/rawfile"
 	"gvisor.dev/gvisor/pkg/tcpip/link/sniffer"
+	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -186,7 +187,7 @@ func main() {
 	}
 
 	ipstack := stack.New(stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{transportProtocol},
 	})
 
