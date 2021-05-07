@@ -455,7 +455,7 @@ func dialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.Netw
 		if err := ep.Bind(*laddr); err != nil {
 			return nil, &net.OpError{
 				Op:   "bind",
-				Net:  "udp",
+				Net:  "tcp",
 				Addr: fullToTCPAddr(*laddr),
 				Err:  errors.New(err.String()),
 			}
