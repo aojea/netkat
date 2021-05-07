@@ -272,7 +272,7 @@ func main() {
 		}
 		var conn net.Conn
 		if !flagUDP {
-			conn, err = gonet.DialTCP(ipstack, dest, protocolNumber)
+			conn, err = dialTCP(ipstack, nil, &dest, protocolNumber)
 			if err != nil {
 				log.Fatalf("Can't connect to server: %s\n", err)
 			}
@@ -349,9 +349,9 @@ func ipToStackAddress(ip net.IP) tcpip.Address {
 	return tcpip.Address(ip)
 }
 
-// DialTCP creates a new TCPConn connected to the specified address
+// dialTCP creates a new TCPConn connected to the specified address
 // with the option of adding a source address and port.
-func DialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
+func dialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
 	// Create TCP endpoint, then connect.
 	var wq waiter.Queue
 	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
