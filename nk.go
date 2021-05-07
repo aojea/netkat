@@ -59,6 +59,7 @@ func init() {
 func main() {
 	var err error
 	var destIP net.IP
+	var sourceIP net.IP
 	var destPort uint16
 
 	// Check permissions
@@ -249,14 +250,34 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	for _, a := range addrs {
 		// Use global addresses only
 		if !a.IP.IsGlobalUnicast() {
 			continue
 		}
 
-		log.Printf("Adding address %s", a.IPNet.String())
-		ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(a.IP))
+		// use same IP family
+		if isIPv6 != isIPv6Address(a.IP) {
+			continue
+		}
+
+		// We only need one IP address
+		// TODO: check how to handle multiple addresses
+		log.Printf("Using source address %s", a.IPNet.String())
+		sourceIP = a.IP
+		break
+	}
+
+	if sourceIP == nil {
+		log.Fatal("can't find a valid source address")
+	}
+	ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(sourceIP))
+	// use the address as source
+	laddr := tcpip.FullAddress{
+		NIC:  nicID,
+		Addr: ipToStackAddress(sourceIP),
+		Port: uint16(flagSrcPort),
 	}
 
 	// Implement the netcat logic
@@ -272,12 +293,12 @@ func main() {
 		}
 		var conn net.Conn
 		if !flagUDP {
-			conn, err = dialTCP(ipstack, nil, &dest, protocolNumber)
+			conn, err = dialTCP(ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
 				log.Fatalf("Can't connect to server: %s\n", err)
 			}
 		} else {
-			conn, err = gonet.DialUDP(ipstack, nil, &dest, protocolNumber)
+			conn, err = gonet.DialUDP(ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
 				log.Fatalf("Can't connect to server: %s\n", err)
 			}
