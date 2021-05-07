@@ -116,6 +116,17 @@ func main() {
 		transportProtocol = udp.NewProtocol
 	}
 
+	// Use IPv4 or IPv6 depending on the destination address
+	isIPv6 := isIPv6Address(destIP)
+	protocolNumber := ipv4.ProtocolNumber
+	networkProtocol := ipv4.NewProtocol
+	family := netlink.FAMILY_V4
+	if isIPv6 {
+		protocolNumber = ipv6.ProtocolNumber
+		networkProtocol = ipv6.NewProtocol
+		family = netlink.FAMILY_V6
+	}
+
 	// Enable signal handler
 	signalCh := make(chan os.Signal, 2)
 	defer close(signalCh)
@@ -126,12 +137,14 @@ func main() {
 	}()
 
 	// Detect interface name if needed
-	intfName := flagInterface
-	if intfName == "" {
-		intfName, err = getDefaultRouteInterface()
-		if err != nil {
-			log.Fatal(err)
-		}
+	intfName, gw, err := getDefaultGatewayInterfaceByFamily(family)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// override the interface if specified
+	if flagInterface != "" {
+		intfName = flagInterface
 	}
 
 	mtu, err := rawfile.GetMTU(intfName)
@@ -206,7 +219,7 @@ func main() {
 	}
 
 	ipstack := stack.New(stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol, arp.NewProtocol},
+		NetworkProtocols:   []stack.NetworkProtocolFactory{networkProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{transportProtocol},
 	})
 	defer func() {
@@ -214,16 +227,16 @@ func main() {
 		ipstack.Wait()
 	}()
 	// Add IPv4 and IPv6 default routes, so all traffic goes through the fake NIC
-	ipv4Subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 4)), tcpip.AddressMask(strings.Repeat("\x00", 4)))
-	ipv6Subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 16)), tcpip.AddressMask(strings.Repeat("\x00", 16)))
+	subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 4)), tcpip.AddressMask(strings.Repeat("\x00", 4)))
+	if isIPv6 {
+		subnet, _ = tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 16)), tcpip.AddressMask(strings.Repeat("\x00", 16)))
+	}
+
 	ipstack.SetRouteTable([]tcpip.Route{
 		{
-			Destination: ipv4Subnet,
+			Destination: subnet,
 			NIC:         nicID,
-		},
-		{
-			Destination: ipv6Subnet,
-			NIC:         nicID,
+			Gateway:     ipToStackAddress(gw),
 		},
 	})
 
@@ -241,8 +254,9 @@ func main() {
 		if !a.IP.IsGlobalUnicast() {
 			continue
 		}
+
 		log.Printf("Adding address %s", a.IPNet.String())
-		ipstack.AddAddress(nicID, getProtocolNumber(a.IP), ipToStackAddress(a.IP))
+		ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(a.IP))
 	}
 
 	// Implement the netcat logic
@@ -258,12 +272,12 @@ func main() {
 		}
 		var conn net.Conn
 		if !flagUDP {
-			conn, err = gonet.DialTCP(ipstack, dest, getProtocolNumber(destIP))
+			conn, err = gonet.DialTCP(ipstack, dest, protocolNumber)
 			if err != nil {
 				log.Fatalf("Can't connect to server: %s\n", err)
 			}
 		} else {
-			conn, err = gonet.DialUDP(ipstack, nil, &dest, getProtocolNumber(destIP))
+			conn, err = gonet.DialUDP(ipstack, nil, &dest, protocolNumber)
 			if err != nil {
 				log.Fatalf("Can't connect to server: %s\n", err)
 			}
@@ -284,13 +298,13 @@ func main() {
 	}
 }
 
-// getDefaultRouteInterface return the interface name used by the default route
-func getDefaultRouteInterface() (string, error) {
+// getDefaultGatewayInterfaceByFamily return the default gw interface and IP
+func getDefaultGatewayInterfaceByFamily(family int) (string, net.IP, error) {
 	// filter the default route to obtain the gateway
 	filter := &netlink.Route{Dst: nil}
-	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, filter, netlink.RT_FILTER_DST)
+	routes, err := netlink.RouteListFiltered(family, filter, netlink.RT_FILTER_DST)
 	if err != nil {
-		return "", errors.Wrapf(err, "failed to get routing table in node")
+		return "", nil, errors.Wrapf(err, "failed to get routing table in node")
 	}
 	// use the first valid default gateway
 	for _, r := range routes {
@@ -298,15 +312,12 @@ func getDefaultRouteInterface() (string, error) {
 		if len(r.MultiPath) == 0 {
 			intfLink, err := netlink.LinkByIndex(r.LinkIndex)
 			if err != nil {
-				log.Printf("Failed to get interface link for route %v : %v", r, err)
 				continue
 			}
 			if r.Gw == nil {
-				log.Printf("Failed to get gateway for route %v : %v", r, err)
 				continue
 			}
-			log.Printf("Found default gateway interface %s %s", intfLink.Attrs().Name, r.Gw.String())
-			return intfLink.Attrs().Name, nil
+			return intfLink.Attrs().Name, r.Gw, nil
 		}
 
 		// multipath, use the first valid entry
@@ -315,30 +326,20 @@ func getDefaultRouteInterface() (string, error) {
 		for _, nh := range r.MultiPath {
 			intfLink, err := netlink.LinkByIndex(nh.LinkIndex)
 			if err != nil {
-				log.Printf("Failed to get interface link for route %v : %v", nh, err)
 				continue
 			}
 			if nh.Gw == nil {
-				log.Printf("Failed to get gateway for multipath route %v : %v", nh, err)
 				continue
 			}
-			log.Printf("Found default gateway interface %s %s", intfLink.Attrs().Name, nh.Gw.String())
-			return intfLink.Attrs().Name, nil
+			return intfLink.Attrs().Name, nh.Gw, nil
 		}
 	}
-	return "", fmt.Errorf("failed to get default gateway interface")
+	return "", net.IP{}, fmt.Errorf("failed to get default gateway interface")
 }
 
 // htons converts a short (uint16) from host-to-network byte order.
 func htons(i uint16) uint16 {
 	return (i<<8)&0xff00 | i>>8
-}
-
-func getProtocolNumber(ip net.IP) tcpip.NetworkProtocolNumber {
-	if ip.To4() != nil {
-		return ipv4.ProtocolNumber
-	}
-	return ipv6.ProtocolNumber
 }
 
 func ipToStackAddress(ip net.IP) tcpip.Address {
@@ -397,4 +398,8 @@ func DialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.Netw
 
 func fullToTCPAddr(addr tcpip.FullAddress) *net.TCPAddr {
 	return &net.TCPAddr{IP: net.IP(addr.Addr), Port: int(addr.Port)}
+}
+
+func isIPv6Address(ip net.IP) bool {
+	return ip.To4() == nil && ip.To16() != nil
 }
