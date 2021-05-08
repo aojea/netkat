@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -181,6 +183,84 @@ func main() {
 
 	if err := unix.Bind(fd, &ll); err != nil {
 		log.Fatalf("unable to bind to %q: %v", "iface.Name", err)
+	}
+
+	// Add a filter to the socket so we receive only the packets we are interested
+	// TODO we can make this more restrictive with source IP and source Port
+	// xref: https://blog.cloudflare.com/bpf-the-forgotten-bytecode/
+
+	// offset 23 protocol 6 TCP 17 UDP
+	bpfProto := uint32(6)
+	if flagUDP {
+		bpfProto = uint32(17)
+	}
+	bpfFilter := []bpf.Instruction{
+		// check the ethertype
+		bpf.LoadAbsolute{Off: 12, Size: 2}, // 00
+		// allow arp
+		bpf.JumpIf{Val: 0x0806, SkipTrue: 10}, // 01
+		// check is ipv4
+		bpf.JumpIf{Val: 0x0800, SkipFalse: 10}, // 01
+		// check the protocol
+		bpf.LoadAbsolute{Off: 23, Size: 1},      // 02
+		bpf.JumpIf{Val: bpfProto, SkipFalse: 8}, // 03
+		// check the source address
+		bpf.LoadAbsolute{Off: 26, Size: 4},                                   // 04
+		bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To4()), SkipFalse: 6}, // 05
+		// skip if offset non zero
+		bpf.LoadAbsolute{Off: 20, Size: 2},                          // 06
+		bpf.JumpIf{Cond: bpf.JumpBitsSet, Val: 0x1fff, SkipTrue: 4}, //07
+		// check the source port
+		bpf.LoadMemShift{Off: 14},                       // 08
+		bpf.LoadIndirect{Off: 14, Size: 2},              // 09
+		bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1}, // 10
+		bpf.RetConstant{Val: 0xffff},                    // accept
+		bpf.RetConstant{Val: 0x0},                       // drop
+	}
+
+	if isIPv6 {
+		bpfFilter = []bpf.Instruction{
+			// check the ethertype
+			bpf.LoadAbsolute{Off: 12, Size: 2},     // 00
+			bpf.JumpIf{Val: 0x86dd, SkipFalse: 13}, // 01
+			// check the protocol
+			bpf.LoadAbsolute{Off: 20, Size: 1},       // 02
+			bpf.JumpIf{Val: bpfProto, SkipFalse: 11}, // 03
+			// check the source address
+			bpf.LoadAbsolute{Off: 22, Size: 4},                                           // 04
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[0:4]), SkipFalse: 9},   // 05
+			bpf.LoadAbsolute{Off: 26, Size: 4},                                           // 06
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[4:8]), SkipFalse: 7},   // 07
+			bpf.LoadAbsolute{Off: 30, Size: 4},                                           // 08
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[8:12]), SkipFalse: 5},  // 09
+			bpf.LoadAbsolute{Off: 34, Size: 4},                                           // 10
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[12:16]), SkipFalse: 3}, // 11
+			// check the source port
+			bpf.LoadAbsolute{Off: 54, Size: 2},              // 12
+			bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1}, // 13
+			bpf.RetConstant{Val: 0xffff},                    // accept
+			bpf.RetConstant{Val: 0x0},                       // drop
+		}
+	}
+	filter, err := bpf.Assemble(bpfFilter)
+	if err != nil {
+		log.Fatalf("Failed to generate BPF assembler: %v", err)
+	}
+
+	f := make([]unix.SockFilter, len(filter))
+	for i := range filter {
+		f[i].Code = filter[i].Op
+		f[i].Jf = filter[i].Jf
+		f[i].Jt = filter[i].Jt
+		f[i].K = filter[i].K
+	}
+	fprog := &unix.SockFprog{
+		Len:    uint16(len(filter)),
+		Filter: &f[0],
+	}
+	err = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog)
+	if err != nil {
+		log.Fatalf("unable to set BPF filter on socket: %v", err)
 	}
 
 	// RAW Sockets by default have a very small SO_RCVBUF of 256KB,

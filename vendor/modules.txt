@@ -9,6 +9,9 @@ github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
 # github.com/vishvananda/netns v0.0.0-20210104183010-2eb08e3e575f
 github.com/vishvananda/netns
+# golang.org/x/net v0.0.0-20201224014010-6772e930b67b
+## explicit
+golang.org/x/net/bpf
 # golang.org/x/sys v0.0.0-20210119212857-b64e53b001e4
 ## explicit
 golang.org/x/sys/internal/unsafeheader
@@ -35,7 +38,6 @@ gvisor.dev/gvisor/pkg/tcpip/header
 gvisor.dev/gvisor/pkg/tcpip/header/parse
 gvisor.dev/gvisor/pkg/tcpip/link/fdbased
 gvisor.dev/gvisor/pkg/tcpip/link/nested
-gvisor.dev/gvisor/pkg/tcpip/link/qdisc/fifo
 gvisor.dev/gvisor/pkg/tcpip/link/rawfile
 gvisor.dev/gvisor/pkg/tcpip/link/sniffer
 gvisor.dev/gvisor/pkg/tcpip/network/arp
