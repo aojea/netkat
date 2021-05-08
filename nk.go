@@ -275,6 +275,38 @@ func main() {
 		log.Fatalf("setsockopt(..., SO_SNDBUF, %v,..) = %v", bufSize, err)
 	}
 
+	// filter on the host so our userspace connections are not resetted
+	// using tc since they are at the beginning of the pipeline
+	// # add an ingress qdisc
+	// tc qdisc add dev eth3 ingress
+	// tc filter add dev eth3 parent ffff: protocol ip prio 6 u32 match ip protocol 47 0x47 flowid 1:16 action drop
+	// xref: https://codilime.com/pdf/codilime_packet_flow_in_netfilter_A3-1-1.pdf
+	qdisc := &netlink.Ingress{
+		QdiscAttrs: netlink.QdiscAttrs{
+			LinkIndex: ifaceLink.Attrs().Index,
+			Handle:    netlink.MakeHandle(0xffff, 0),
+			Parent:    netlink.HANDLE_INGRESS,
+		},
+	}
+	if err = netlink.QdiscAdd(qdisc); err != nil {
+		log.Fatal(err)
+	}
+	defer netlink.QdiscDel(qdisc)
+	classId := netlink.MakeHandle(1, 1)
+	filterNL := &netlink.U32{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: ifaceLink.Attrs().Index,
+			Handle:    netlink.MakeHandle(0xffff, 0),
+			Priority:  1,
+			Protocol:  unix.ETH_P_IP,
+		},
+		ClassId: classId,
+	}
+	if err := netlink.FilterAdd(filterNL); err != nil {
+		log.Fatal(err)
+	}
+
+	// add the socket to the userspace stack
 	la := tcpip.LinkAddress(ifaceLink.Attrs().HardwareAddr)
 
 	linkID, err := fdbased.New(&fdbased.Options{
