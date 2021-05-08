@@ -196,50 +196,52 @@ func main() {
 	}
 	bpfFilter := []bpf.Instruction{
 		// check the ethertype
-		bpf.LoadAbsolute{Off: 12, Size: 2}, // 00
+		bpf.LoadAbsolute{Off: 12, Size: 2},
 		// allow arp
-		bpf.JumpIf{Val: 0x0806, SkipTrue: 10}, // 01
+		bpf.JumpIf{Val: 0x0806, SkipTrue: 10},
 		// check is ipv4
-		bpf.JumpIf{Val: 0x0800, SkipFalse: 10}, // 01
+		bpf.JumpIf{Val: 0x0800, SkipFalse: 10},
 		// check the protocol
-		bpf.LoadAbsolute{Off: 23, Size: 1},      // 02
-		bpf.JumpIf{Val: bpfProto, SkipFalse: 8}, // 03
+		bpf.LoadAbsolute{Off: 23, Size: 1},
+		bpf.JumpIf{Val: bpfProto, SkipFalse: 8},
 		// check the source address
-		bpf.LoadAbsolute{Off: 26, Size: 4},                                   // 04
-		bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To4()), SkipFalse: 6}, // 05
+		bpf.LoadAbsolute{Off: 26, Size: 4},
+		bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To4()), SkipFalse: 6},
 		// skip if offset non zero
-		bpf.LoadAbsolute{Off: 20, Size: 2},                          // 06
-		bpf.JumpIf{Cond: bpf.JumpBitsSet, Val: 0x1fff, SkipTrue: 4}, //07
+		bpf.LoadAbsolute{Off: 20, Size: 2},
+		bpf.JumpIf{Cond: bpf.JumpBitsSet, Val: 0x1fff, SkipTrue: 4},
 		// check the source port
-		bpf.LoadMemShift{Off: 14},                       // 08
-		bpf.LoadIndirect{Off: 14, Size: 2},              // 09
-		bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1}, // 10
-		bpf.RetConstant{Val: 0xffff},                    // accept
-		bpf.RetConstant{Val: 0x0},                       // drop
+		bpf.LoadMemShift{Off: 14},
+		bpf.LoadIndirect{Off: 14, Size: 2},
+		bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1},
+		bpf.RetConstant{Val: 0xffff},
+		bpf.RetConstant{Val: 0x0},
 	}
 
 	if isIPv6 {
 		bpfFilter = []bpf.Instruction{
 			// check the ethertype
-			bpf.LoadAbsolute{Off: 12, Size: 2},     // 00
-			bpf.JumpIf{Val: 0x86dd, SkipFalse: 13}, // 01
+			bpf.LoadAbsolute{Off: 12, Size: 2},
+			bpf.JumpIf{Val: 0x86dd, SkipFalse: 14},
 			// check the protocol
-			bpf.LoadAbsolute{Off: 20, Size: 1},       // 02
-			bpf.JumpIf{Val: bpfProto, SkipFalse: 11}, // 03
+			bpf.LoadAbsolute{Off: 20, Size: 1},
+			// allow icmpv6
+			bpf.JumpIf{Val: 58, SkipTrue: 11},
+			bpf.JumpIf{Val: bpfProto, SkipFalse: 11},
 			// check the source address
-			bpf.LoadAbsolute{Off: 22, Size: 4},                                           // 04
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[0:4]), SkipFalse: 9},   // 05
-			bpf.LoadAbsolute{Off: 26, Size: 4},                                           // 06
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[4:8]), SkipFalse: 7},   // 07
-			bpf.LoadAbsolute{Off: 30, Size: 4},                                           // 08
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[8:12]), SkipFalse: 5},  // 09
-			bpf.LoadAbsolute{Off: 34, Size: 4},                                           // 10
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[12:16]), SkipFalse: 3}, // 11
+			bpf.LoadAbsolute{Off: 22, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[0:4]), SkipFalse: 9},
+			bpf.LoadAbsolute{Off: 26, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[4:8]), SkipFalse: 7},
+			bpf.LoadAbsolute{Off: 30, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[8:12]), SkipFalse: 5},
+			bpf.LoadAbsolute{Off: 34, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[12:16]), SkipFalse: 3},
 			// check the source port
-			bpf.LoadAbsolute{Off: 54, Size: 2},              // 12
-			bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1}, // 13
-			bpf.RetConstant{Val: 0xffff},                    // accept
-			bpf.RetConstant{Val: 0x0},                       // drop
+			bpf.LoadAbsolute{Off: 54, Size: 2},
+			bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1},
+			bpf.RetConstant{Val: 0xffff}, // accept
+			bpf.RetConstant{Val: 0x0},    // drop
 		}
 	}
 	filter, err := bpf.Assemble(bpfFilter)
