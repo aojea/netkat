@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/bpf"
@@ -249,6 +252,7 @@ func main() {
 		log.Fatalf("Failed to generate BPF assembler: %v", err)
 	}
 
+	// xref: https://github.com/google/gopacket/blob/3eaba08943250fd212520e5cff00ed808b8fc60a/pcapgo/capture.go#L184
 	f := make([]unix.SockFilter, len(filter))
 	for i := range filter {
 		f[i].Code = filter[i].Op
@@ -260,6 +264,7 @@ func main() {
 		Len:    uint16(len(filter)),
 		Filter: &f[0],
 	}
+
 	err = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog)
 	if err != nil {
 		log.Fatalf("unable to set BPF filter on socket: %v", err)
@@ -279,12 +284,12 @@ func main() {
 	// using tc since they are at the beginning of the pipeline
 	// # add an ingress qdisc
 	// tc qdisc add dev eth3 ingress
-	// tc filter add dev eth3 parent ffff: protocol ip prio 6 u32 match ip protocol 47 0x47 flowid 1:16 action drop
 	// xref: https://codilime.com/pdf/codilime_packet_flow_in_netfilter_A3-1-1.pdf
+	handle := netlink.MakeHandle(0xffff, 0)
 	qdisc := &netlink.Ingress{
 		QdiscAttrs: netlink.QdiscAttrs{
 			LinkIndex: ifaceLink.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
+			Handle:    handle,
 			Parent:    netlink.HANDLE_INGRESS,
 		},
 	}
@@ -292,19 +297,66 @@ func main() {
 		log.Fatal(err)
 	}
 	defer netlink.QdiscDel(qdisc)
-	classId := netlink.MakeHandle(1, 1)
-	filterNL := &netlink.U32{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: ifaceLink.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Priority:  1,
-			Protocol:  unix.ETH_P_IP,
-		},
-		ClassId: classId,
+
+	ebpfInss := asm.Instructions{
+		// r1 has ctx
+		// r0 = ctx[16] (aka protocol)
+		asm.LoadMem(asm.R0, asm.R1, 16, asm.Word),
+
+		// Perhaps ipv6
+		asm.LoadImm(asm.R2, int64(0x86DD), asm.DWord),
+		asm.HostTo(asm.BE, asm.R2, asm.Half),
+		asm.JEq.Reg(asm.R0, asm.R2, "ipv6"),
+
+		// otherwise assume ipv4
+		// 8th byte in IPv4 is TTL
+		// LDABS requires ctx in R6
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.LoadAbs(-0x100000+8, asm.Byte),
+		asm.Ja.Label("store-ttl"),
+
+		// 7th byte in IPv6 is Hop count
+		// LDABS requires ctx in R6
+		asm.Mov.Reg(asm.R6, asm.R1).Sym("ipv6"),
+		asm.LoadAbs(-0x100000+7, asm.Byte),
+
+		// stash the load result into FP[-4]
+		asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word).Sym("store-ttl"),
+		// stash the &FP[-4] into r2
+		asm.Mov.Reg(asm.R2, asm.RFP),
+		asm.Add.Imm(asm.R2, -4),
+
+		// set exit code to -1, don't trunc packet
+		asm.Mov.Imm(asm.R0, -1).Sym("exit"),
+		asm.Return(),
 	}
-	if err := netlink.FilterAdd(filterNL); err != nil {
+
+	bpfProgram, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name:         "nk_drop_filter",
+		Type:         ebpf.SocketFilter,
+		License:      "GPL",
+		Instructions: ebpfInss,
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer bpfProgram.Close()
+
+	ingressFilter := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: ifaceLink.Attrs().Index,
+			Parent:    handle,
+			Protocol:  unix.ETH_P_ALL,
+		},
+		Fd:           bpfProgram.FD(),
+		Name:         "nkfilter",
+		DirectAction: true,
+	}
+
+	if err := netlink.FilterAdd(ingressFilter); err != nil {
+		log.Fatal(err)
+	}
+	defer netlink.FilterDel(ingressFilter)
 
 	// add the socket to the userspace stack
 	la := tcpip.LinkAddress(ifaceLink.Attrs().HardwareAddr)
