@@ -1,7 +1,6 @@
-package main
+package netkat
 
 import (
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -12,13 +11,11 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/asm"
-	"github.com/cloudflare/cbpfc"
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -34,6 +31,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
+
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go filter bpf/filter.c -- -I./include -nostdinc -O3
 
 const (
 	nicID   = 1
@@ -188,101 +187,25 @@ func main() {
 		log.Fatalf("unable to bind to %q: %v", "iface.Name", err)
 	}
 
-	// Add a filter to the socket so we receive only the packets we are interested
-	// TODO we can make this more restrictive with source IP and source Port
-	// xref: https://blog.cloudflare.com/bpf-the-forgotten-bytecode/
-	// sudo tcpdump -ni docker0 -d "ip and src host 111.111.111.111 and udp src port 8888"
-
-	// offset 23 protocol 6 TCP 17 UDP
-	bpfProto := uint32(6)
-	if flagUDP {
-		bpfProto = uint32(17)
-	}
-	bpfFilter := []bpf.Instruction{
-		// check the ethertype
-		bpf.LoadAbsolute{Off: 12, Size: 2},
-		// allow arp
-		bpf.JumpIf{Val: 0x0806, SkipTrue: 10},
-		// check is ipv4
-		bpf.JumpIf{Val: 0x0800, SkipFalse: 10},
-		// check the protocol
-		bpf.LoadAbsolute{Off: 23, Size: 1},
-		bpf.JumpIf{Val: bpfProto, SkipFalse: 8},
-		// check the source address
-		bpf.LoadAbsolute{Off: 26, Size: 4},
-		bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To4()), SkipFalse: 6},
-		// skip if offset non zero
-		bpf.LoadAbsolute{Off: 20, Size: 2},
-		bpf.JumpIf{Cond: bpf.JumpBitsSet, Val: 0x1fff, SkipTrue: 4},
-		// check the source port
-		bpf.LoadMemShift{Off: 14},
-		bpf.LoadIndirect{Off: 14, Size: 2},
-		bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1},
-		bpf.RetConstant{Val: 0xffff},
-		bpf.RetConstant{Val: 0x0},
-	}
-
-	if isIPv6 {
-		bpfFilter = []bpf.Instruction{
-			// check the ethertype
-			bpf.LoadAbsolute{Off: 12, Size: 2},
-			bpf.JumpIf{Val: 0x86dd, SkipFalse: 14},
-			// check the protocol
-			bpf.LoadAbsolute{Off: 20, Size: 1},
-			// allow icmpv6
-			bpf.JumpIf{Val: 58, SkipTrue: 11},
-			bpf.JumpIf{Val: bpfProto, SkipFalse: 11},
-			// check the source address
-			bpf.LoadAbsolute{Off: 22, Size: 4},
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[0:4]), SkipFalse: 9},
-			bpf.LoadAbsolute{Off: 26, Size: 4},
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[4:8]), SkipFalse: 7},
-			bpf.LoadAbsolute{Off: 30, Size: 4},
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[8:12]), SkipFalse: 5},
-			bpf.LoadAbsolute{Off: 34, Size: 4},
-			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[12:16]), SkipFalse: 3},
-			// check the source port
-			bpf.LoadAbsolute{Off: 54, Size: 2},
-			bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1},
-			bpf.RetConstant{Val: 0xffff}, // accept
-			bpf.RetConstant{Val: 0x0},    // drop
-		}
-	}
-
-	ebpfFilter, err := cbpfc.ToEBPF(bpfFilter, cbpfc.EBPFOpts{
-		PacketStart: asm.R0,
-		PacketEnd:   asm.R1,
-
-		Result:      asm.R2,
-		ResultLabel: "result",
-
-		Working: [4]asm.Register{asm.R2, asm.R3, asm.R4, asm.R5},
-
-		StackOffset: 0,
-		LabelPrefix: "filter",
-	})
-	if err != nil {
-		log.Fatalf("Error converting cBPF to eBPF: %v", err)
-	}
-
 	prog, err := ebpf.NewProgram(
 		&ebpf.ProgramSpec{
 			Name:         "bpf_filter",
 			Type:         ebpf.SocketFilter,
-			Instructions: ebpfFilter,
+			Instructions: insns,
 			License:      "GPL",
 		},
 	)
 	if err != nil {
 		log.Fatalf("Error creating eBPF program: %v", err)
 	}
+	defer prog.Close()
 
 	bpfFd := prog.FD()
 	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, bpfFd)
-
 	if err != nil {
 		log.Fatalf("unable to set BPF filter on socket: %v", err)
 	}
+	defer syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, unix.SO_DETACH_BPF, bpfFd)
 
 	// RAW Sockets by default have a very small SO_RCVBUF of 256KB,
 	// up it to at least 4MB to reduce packet drops.

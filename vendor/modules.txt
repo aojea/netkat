@@ -1,13 +1,10 @@
-# github.com/cilium/ebpf v0.2.0
+# github.com/cilium/ebpf v0.5.0
 ## explicit
 github.com/cilium/ebpf
 github.com/cilium/ebpf/asm
 github.com/cilium/ebpf/internal
 github.com/cilium/ebpf/internal/btf
 github.com/cilium/ebpf/internal/unix
-# github.com/cloudflare/cbpfc v0.0.0-20201119110315-98c3c3392325
-## explicit
-github.com/cloudflare/cbpfc
 # github.com/google/btree v1.0.0
 github.com/google/btree
 # github.com/pkg/errors v0.9.1
@@ -19,10 +16,7 @@ github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
 # github.com/vishvananda/netns v0.0.0-20210104183010-2eb08e3e575f
 github.com/vishvananda/netns
-# golang.org/x/net v0.0.0-20201224014010-6772e930b67b
-## explicit
-golang.org/x/net/bpf
-# golang.org/x/sys v0.0.0-20210119212857-b64e53b001e4
+# golang.org/x/sys v0.0.0-20210124154548-22da62e12c0c
 ## explicit
 golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/unix
