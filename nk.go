@@ -15,7 +15,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-
+	"github.com/cloudflare/cbpfc"
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/bpf"
@@ -191,6 +191,7 @@ func main() {
 	// Add a filter to the socket so we receive only the packets we are interested
 	// TODO we can make this more restrictive with source IP and source Port
 	// xref: https://blog.cloudflare.com/bpf-the-forgotten-bytecode/
+	// sudo tcpdump -ni docker0 -d "ip and src host 111.111.111.111 and udp src port 8888"
 
 	// offset 23 protocol 6 TCP 17 UDP
 	bpfProto := uint32(6)
@@ -247,25 +248,38 @@ func main() {
 			bpf.RetConstant{Val: 0x0},    // drop
 		}
 	}
-	filter, err := bpf.Assemble(bpfFilter)
+
+	ebpfFilter, err := cbpfc.ToEBPF(bpfFilter, cbpfc.EBPFOpts{
+		PacketStart: asm.R0,
+		PacketEnd:   asm.R1,
+
+		Result:      asm.R2,
+		ResultLabel: "result",
+
+		Working: [4]asm.Register{asm.R2, asm.R3, asm.R4, asm.R5},
+
+		StackOffset: 0,
+		LabelPrefix: "filter",
+	})
 	if err != nil {
-		log.Fatalf("Failed to generate BPF assembler: %v", err)
+		log.Fatalf("Error converting cBPF to eBPF: %v", err)
 	}
 
-	// xref: https://github.com/google/gopacket/blob/3eaba08943250fd212520e5cff00ed808b8fc60a/pcapgo/capture.go#L184
-	f := make([]unix.SockFilter, len(filter))
-	for i := range filter {
-		f[i].Code = filter[i].Op
-		f[i].Jf = filter[i].Jf
-		f[i].Jt = filter[i].Jt
-		f[i].K = filter[i].K
-	}
-	fprog := &unix.SockFprog{
-		Len:    uint16(len(filter)),
-		Filter: &f[0],
+	prog, err := ebpf.NewProgram(
+		&ebpf.ProgramSpec{
+			Name:         "bpf_filter",
+			Type:         ebpf.SocketFilter,
+			Instructions: ebpfFilter,
+			License:      "GPL",
+		},
+	)
+	if err != nil {
+		log.Fatalf("Error creating eBPF program: %v", err)
 	}
 
-	err = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog)
+	bpfFd := prog.FD()
+	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, bpfFd)
+
 	if err != nil {
 		log.Fatalf("unable to set BPF filter on socket: %v", err)
 	}
@@ -285,71 +299,33 @@ func main() {
 	// # add an ingress qdisc
 	// tc qdisc add dev eth3 ingress
 	// xref: https://codilime.com/pdf/codilime_packet_flow_in_netfilter_A3-1-1.pdf
-	handle := netlink.MakeHandle(0xffff, 0)
-	qdisc := &netlink.Ingress{
+	qdisc := &netlink.GenericQdisc{
 		QdiscAttrs: netlink.QdiscAttrs{
 			LinkIndex: ifaceLink.Attrs().Index,
-			Handle:    handle,
-			Parent:    netlink.HANDLE_INGRESS,
+			Handle:    netlink.MakeHandle(0xffff, 0),
+			Parent:    netlink.HANDLE_CLSACT,
 		},
+		QdiscType: "clsact",
 	}
 	if err = netlink.QdiscAdd(qdisc); err != nil {
 		log.Fatalf("Failed to add qdisc: %v", err)
 	}
-	defer netlink.QdiscDel(qdisc)
+	defer func() {
+		if err = netlink.QdiscDel(qdisc); err != nil {
+			log.Fatalf("Failed to del qdisc: %v", err)
+		}
+	}()
 
-	ebpfInss := asm.Instructions{
-		// r1 has ctx
-		// r0 = ctx[16] (aka protocol)
-		asm.LoadMem(asm.R0, asm.R1, 16, asm.Word),
-
-		// Perhaps ipv6
-		asm.LoadImm(asm.R2, int64(0x86DD), asm.DWord),
-		asm.HostTo(asm.BE, asm.R2, asm.Half),
-		asm.JEq.Reg(asm.R0, asm.R2, "ipv6"),
-
-		// otherwise assume ipv4
-		// 8th byte in IPv4 is TTL
-		// LDABS requires ctx in R6
-		asm.Mov.Reg(asm.R6, asm.R1),
-		asm.LoadAbs(-0x100000+8, asm.Byte),
-		asm.Ja.Label("store-ttl"),
-
-		// 7th byte in IPv6 is Hop count
-		// LDABS requires ctx in R6
-		asm.Mov.Reg(asm.R6, asm.R1).Sym("ipv6"),
-		asm.LoadAbs(-0x100000+7, asm.Byte),
-
-		// stash the load result into FP[-4]
-		asm.StoreMem(asm.RFP, -4, asm.R0, asm.Word).Sym("store-ttl"),
-		// stash the &FP[-4] into r2
-		asm.Mov.Reg(asm.R2, asm.RFP),
-		asm.Add.Imm(asm.R2, -4),
-
-		// set exit code to -1, don't trunc packet
-		asm.Mov.Imm(asm.R0, -1).Sym("exit"),
-		asm.Return(),
-	}
-
-	bpfProgram, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name:         "nk_drop_filter",
-		Type:         ebpf.SocketFilter,
-		License:      "GPL",
-		Instructions: ebpfInss,
-	})
-	if err != nil {
-		log.Fatalf("Fail to attache bpf code: %v", err)
-	}
-	defer bpfProgram.Close()
-
+	// https://man7.org/linux/man-pages/man8/tc-bpf.8.html
 	ingressFilter := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: ifaceLink.Attrs().Index,
-			Parent:    handle,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Handle:    netlink.MakeHandle(0, 1),
 			Protocol:  unix.ETH_P_ALL,
 		},
-		Fd:           bpfProgram.FD(),
-		Name:         "nkfilter",
+		Fd:           bpfFd,
+		Name:         "nkFilter",
 		DirectAction: true,
 	}
 
