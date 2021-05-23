@@ -145,7 +145,7 @@ func main() {
 	// Detect interface name if needed
 	intfName, gw, err := getDefaultGatewayInterfaceByFamily(family)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Fail to get default interface: %v", err)
 	}
 
 	// override the interface if specified
@@ -155,7 +155,7 @@ func main() {
 
 	mtu, err := rawfile.GetMTU(intfName)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to get interface %s MTU: %v", intfName, err)
 	}
 
 	ifaceLink, err := netlink.LinkByName(intfName)
@@ -294,7 +294,7 @@ func main() {
 		},
 	}
 	if err = netlink.QdiscAdd(qdisc); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to add qdisc: %v", err)
 	}
 	defer netlink.QdiscDel(qdisc)
 
@@ -338,7 +338,7 @@ func main() {
 		Instructions: ebpfInss,
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Fail to attache bpf code: %v", err)
 	}
 	defer bpfProgram.Close()
 
@@ -354,7 +354,7 @@ func main() {
 	}
 
 	if err := netlink.FilterAdd(ingressFilter); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to add filter: %v", err)
 	}
 	defer netlink.FilterDel(ingressFilter)
 
@@ -408,13 +408,13 @@ func main() {
 	})
 
 	if err := ipstack.CreateNIC(1, linkID); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to create userspace NIC: %v", err)
 	}
 
 	// Take over the interface addresses
 	addrs, err := netlink.AddrList(ifaceLink, netlink.FAMILY_ALL)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to list interface addresses: %v", err)
 	}
 
 	for _, a := range addrs {
