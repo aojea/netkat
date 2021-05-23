@@ -22,10 +22,16 @@
  */
 
 
-__u8 IP_FAMILY;
-__u8 PROTO;
-__u16 SRC_PORT;
-__u16 DST_PORT;
+static volatile unsigned const char PROTO;
+static volatile unsigned const char PROTO = IPPROTO_ICMP;
+
+static volatile unsigned const char IP_FAMILY;
+static volatile unsigned const char IP_FAMILY = 4;
+
+static volatile unsigned const short SRC_PORT;
+static volatile unsigned const short SRC_PORT = 0;
+static volatile unsigned const short DST_PORT;
+static volatile unsigned const short DST_PORT = 0;
 
 /*
  * classifier return 1 if the packet matches the filter
@@ -117,7 +123,7 @@ int socket_filter(struct __sk_buff *skb)
  * Drop the packets that doesn't match the filter
  */
 
-SEC("ingress")
+SEC("socket")
 int tc_ingress(struct __sk_buff *skb)
 {
      void *data_end = (void *)(unsigned long long)skb->data_end;
