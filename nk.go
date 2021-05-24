@@ -187,16 +187,21 @@ func main() {
 		log.Fatalf("unable to bind to %q: %v", "iface.Name", err)
 	}
 
-	prog, err := ebpf.NewProgram(
-		&ebpf.ProgramSpec{
-			Name:         "bpf_filter",
-			Type:         ebpf.SocketFilter,
-			Instructions: insns,
-			License:      "GPL",
-		},
-	)
+	spec, err := loadFilter()
 	if err != nil {
 		log.Fatalf("Error creating eBPF program: %v", err)
+	}
+
+	spec.RewriteConstants(map[])
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		panic(err)
+	}
+	defer coll.Close()
+
+	prog := coll.DetachProgram("socket_filter")
+	if prog == nil {
+		panic("no program named socket_filter found")
 	}
 	defer prog.Close()
 
