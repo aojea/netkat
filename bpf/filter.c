@@ -1,7 +1,6 @@
 #include <linux/bpf.h>
 #include <linux/in.h>
 #include <linux/types.h>
-#include <linux/string.h>
 #include <linux/pkt_cls.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>

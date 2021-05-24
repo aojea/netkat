@@ -32,7 +32,7 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go filter bpf/filter.c -- -I./include -nostdinc -O3
+//go:generate $HOME/go/bin/bpf2go filter bpf/filter.c -- -I/usr/include -I./bpf -nostdinc -O3
 
 const (
 	nicID   = 1
