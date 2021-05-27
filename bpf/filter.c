@@ -20,24 +20,32 @@
  * srcPort
  */
 
+#define AF_INET	2	/* IP protocol family.  */
+#define AF_INET6	10	/* IP version 6.  */
 
+#define PROTO	IPPROTO_ICMP	/* IP protocol family.  */
+#define IP_FAMILY	AF_INET	/* IP version 6.  */
+#define SRC_PORT	0	/* IP protocol family.  */
+#define DST_PORT	8080	/* IP version 6.  */
+/* 
 static volatile unsigned const char PROTO;
 static volatile unsigned const char PROTO = IPPROTO_ICMP;
 
 static volatile unsigned const char IP_FAMILY;
-static volatile unsigned const char IP_FAMILY = 4;
+static volatile unsigned const char IP_FAMILY = AF_INET;
 
 static volatile unsigned const short SRC_PORT;
 static volatile unsigned const short SRC_PORT = 0;
 static volatile unsigned const short DST_PORT;
 static volatile unsigned const short DST_PORT = 0;
+*/
 
 /*
  * classifier return 1 if the packet matches the filter
  * 0 of it does not
  */
 
-int classifier(struct __sk_buff *skb)
+int _packet_classifier(struct __sk_buff *skb)
 {
      __u16 dst_port = 0;
      __u16 src_port = 0;
@@ -47,15 +55,20 @@ int classifier(struct __sk_buff *skb)
 
      // process IPv4
      if  (skb->protocol == bpf_htons(ETH_P_IP) &&
-          IP_FAMILY == 4) {
+          IP_FAMILY == AF_INET) {
           if (data + sizeof(struct iphdr) > data_end) { 
                return 0; 
           }
           
-          struct iphdr *ip = data;
+          struct iphdr *ip_hdr = data;
           // TODO filter IP ip_src = iph->saddr;
-
-          if (ip->protocol != PROTO) {
+          // Print IP address (Note 127.0.0.1 <-> 2130706433)
+          __u32 sip = bpf_ntohl(ip_hdr->saddr);
+          bpf_trace_printk("ip_hdr->saddr: %lu\n", sip);
+          __u32 dip = bpf_ntohl(ip_hdr->daddr);
+          bpf_trace_printk("ip_hdr->daddr: %lu\n", dip);
+          
+          if (ip_hdr->protocol != PROTO) {
                return 0;
           }
           __u8 *ihlandversion = data;
@@ -63,12 +76,19 @@ int classifier(struct __sk_buff *skb)
           if (data + ihlen + sizeof(struct tcphdr) > data_end) { 
                return 0; 
           }
-          struct tcphdr *tcp = data + ihlen;
-          src_port = __bpf_ntohs(tcp->source);
-          dst_port = __bpf_ntohs(tcp->dest);
+          if (ip_hdr->protocol==17) {
+               struct udphdr *udp = data + ihlen;
+               src_port = __bpf_ntohs(udp->source);
+               dst_port = __bpf_ntohs(udp->dest);
+          } else {
+               struct tcphdr *tcp = data + ihlen;
+               src_port = __bpf_ntohs(tcp->source);
+               dst_port = __bpf_ntohs(tcp->dest);
+          }
+
      // process IPv6
      } else if (skb->protocol == bpf_htons(ETH_P_IPV6) &&
-          IP_FAMILY == 6) {
+          IP_FAMILY == AF_INET6) {
           struct ipv6hdr *ipv6 = data;
           __u8 ihlen = sizeof(struct ipv6hdr);
           if (((void *) ipv6) + ihlen > data_end) { 
@@ -82,13 +102,31 @@ int classifier(struct __sk_buff *skb)
           if (((void *) ipv6) + ihlen + sizeof(struct tcphdr) > data_end) { 
                return 0; 
           }
-          struct tcphdr *tcp = ((void *) ipv6) + ihlen;
-          src_port = __bpf_ntohs(tcp->source);
-          dst_port = __bpf_ntohs(tcp->dest);
+          if (ipv6->nexthdr==17) {
+               struct udphdr *udp = data + ihlen;
+               src_port = __bpf_ntohs(udp->source);
+               dst_port = __bpf_ntohs(udp->dest);
+          } else if (ipv6->nexthdr == 6) {
+               struct tcphdr *tcp = data + ihlen;
+               src_port = __bpf_ntohs(tcp->source);
+               dst_port = __bpf_ntohs(tcp->dest);
+          }
+
      }
 
-     if (src_port == DST_PORT &&
-          dst_port == SRC_PORT) {
+
+     bpf_trace_printk("tcp_hdr->source: %u\n", src_port);
+     bpf_trace_printk("tcp_hdr->dest: %u\n", dst_port);
+
+     // if SRC_PORT specified check it
+     if (SRC_PORT != 0 &&
+          dst_port != SRC_PORT) {
+               return 0;
+          }
+
+     // same port tuple
+     // TODO: check ip addresses
+     if (dst_port == SRC_PORT) {
                return 1;
      }
      return 0; /* no match */
@@ -99,7 +137,7 @@ int classifier(struct __sk_buff *skb)
  */
 
 SEC("socket")
-int socket_filter(struct __sk_buff *skb)
+int _socket_filter(struct __sk_buff *skb)
 {
      void *data_end = (void *)(unsigned long long)skb->data_end;
 	void *data = (void *)(unsigned long long)skb->data;
@@ -115,15 +153,15 @@ int socket_filter(struct __sk_buff *skb)
      // TODO allow icmp ND
 
      // allow packets mathing the filter
-     return classifier(skb);
+     return _packet_classifier(skb);
 }
 
 /*
  * Drop the packets that doesn't match the filter
  */
 
-SEC("socket")
-int tc_ingress(struct __sk_buff *skb)
+SEC("classifier")
+int _tc_ingress(struct __sk_buff *skb)
 {
      void *data_end = (void *)(unsigned long long)skb->data_end;
 	void *data = (void *)(unsigned long long)skb->data;
@@ -133,8 +171,8 @@ int tc_ingress(struct __sk_buff *skb)
      }
 
      // reject packets matching the filter
-     if (classifier(skb)) {
-          return TC_ACT_SHOT;
+     if (_packet_classifier(skb)) {
+          return TC_ACT_OK;
      }
      return TC_ACT_OK;
 }

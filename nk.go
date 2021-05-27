@@ -117,8 +117,10 @@ func main() {
 
 	// Use TCP by default
 	transportProtocol := tcp.NewProtocol
+	transportProtocolNumber := tcp.ProtocolNumber
 	if flagUDP {
 		transportProtocol = udp.NewProtocol
+		transportProtocolNumber = udp.ProtocolNumber
 	}
 
 	// Use IPv4 or IPv6 depending on the destination address
@@ -192,7 +194,16 @@ func main() {
 		log.Fatalf("Error creating eBPF program: %v", err)
 	}
 
-	spec.RewriteConstants(map[])
+	err = spec.RewriteConstants(map[string]interface{}{
+		"PROTO":     uint8(transportProtocolNumber),
+		"IP_FAMILY": uint8(family),
+		"SRC_PORT":  uint16(flagSrcPort),
+		"DST_PORT":  uint16(destPort),
+	})
+	if err != nil {
+		log.Fatalf("Error rewriting eBPF program: %v", err)
+	}
+
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
 		panic(err)
