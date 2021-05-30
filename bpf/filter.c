@@ -33,6 +33,8 @@
 #define AF_INET6 10		   /* IP version 6.  */
 #define PROTO IPPROTO_ICMP /* IP protocol family.  */
 #define IP_FAMILY AF_INET  /* IP version 6.  */
+#define SRC_IP 0		   /* IP protocol family.  */
+#define DST_IP 0xAC110002  /* 172.17.0.2  */
 #define SRC_PORT 0		   /* IP protocol family.  */
 #define DST_PORT 80		   /* IP version 6.  */
 
@@ -98,6 +100,20 @@ int _ingress(struct __sk_buff *skb)
 	dest_ip = iph->daddr;
 	ipproto = iph->protocol;
 	bpf_debug("ip src %x ip dst %x", src_ip, dest_ip);
+
+	// if SRC_PORT specified check it
+	if (SRC_IP != 0 &&
+		dest_ip != SRC_IP)
+	{
+		return TC_ACT_OK;
+	}
+
+	// if DST_PORT specified check it
+	if (DST_IP != 0 &&
+		src_ip != DST_IP)
+	{
+		return TC_ACT_SHOT;
+	}
 
 	/* get transport ports */
 	struct udphdr *udph;
