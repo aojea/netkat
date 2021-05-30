@@ -48,11 +48,16 @@
  */
 
 /*
-static volatile unsigned const char PROTO;
-static volatile unsigned const char PROTO = IPPROTO_ICMP;
-
 static volatile unsigned const char IP_FAMILY;
 static volatile unsigned const char IP_FAMILY = 4;
+
+static volatile unsigned const short SRC_IP;
+static volatile unsigned const short SRC_IP = 0;
+static volatile unsigned const short DST_IP;
+static volatile unsigned const short DST_IP = 0;
+
+static volatile unsigned const char PROTO;
+static volatile unsigned const char PROTO = IPPROTO_ICMP;
 
 static volatile unsigned const short SRC_PORT;
 static volatile unsigned const short SRC_PORT = 0;
