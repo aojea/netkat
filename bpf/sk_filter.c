@@ -55,10 +55,10 @@
 static volatile unsigned const char IP_FAMILY;
 static volatile unsigned const char IP_FAMILY = 4;
 
-static volatile unsigned const short SRC_IP;
-static volatile unsigned const short SRC_IP = 0;
-static volatile unsigned const short DST_IP;
-static volatile unsigned const short DST_IP = 0;
+static volatile unsigned const int SRC_IP;
+static volatile unsigned const int SRC_IP = 0;
+static volatile unsigned const int DST_IP;
+static volatile unsigned const int DST_IP = 0;
 
 static volatile unsigned const char PROTO;
 static volatile unsigned const char PROTO = IPPROTO_ICMP;
@@ -125,6 +125,10 @@ int _socket(struct __sk_buff *skb)
 		return 0;
 	}
 
+	if (ipproto != PROTO)
+	{
+		return 0;
+	}
 	/* get transport ports */
 	struct udphdr *udph;
 	struct tcphdr *tcph;

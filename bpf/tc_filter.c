@@ -54,10 +54,10 @@
 static volatile unsigned const char IP_FAMILY;
 static volatile unsigned const char IP_FAMILY = 4;
 
-static volatile unsigned const short SRC_IP;
-static volatile unsigned const short SRC_IP = 0;
-static volatile unsigned const short DST_IP;
-static volatile unsigned const short DST_IP = 0;
+static volatile unsigned const int SRC_IP;
+static volatile unsigned const int SRC_IP = 0;
+static volatile unsigned const int DST_IP;
+static volatile unsigned const int DST_IP = 0;
 
 static volatile unsigned const char PROTO;
 static volatile unsigned const char PROTO = IPPROTO_ICMP;
@@ -105,10 +105,9 @@ int _ingress(struct __sk_buff *skb)
 	/* get IP transport protocol */
 	src_ip = __bpf_ntohl(iph->saddr);
 	dest_ip = __bpf_ntohl(iph->daddr);
-	ipproto = iph->protocol;
 	bpf_debug("ip src %x ip dst %x", src_ip, dest_ip);
 
-	// if SRC_PORT specified check it
+	// if SRC_IP specified check it
 	if (SRC_IP != 0 &&
 		src_ip != SRC_IP)
 	{
@@ -116,7 +115,7 @@ int _ingress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	}
 
-	// if DST_PORT specified check it
+	// if DST_IP specified check it
 	if (DST_IP != 0 &&
 		dest_ip != DST_IP)
 	{
@@ -124,6 +123,11 @@ int _ingress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	}
 
+	ipproto = iph->protocol;
+	if (ipproto != PROTO)
+	{
+		return TC_ACT_OK;
+	}
 	/* get transport ports */
 	struct udphdr *udph;
 	struct tcphdr *tcph;
