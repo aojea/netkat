@@ -33,8 +33,8 @@
 #define AF_INET6 10		   /* IP version 6.  */
 #define PROTO IPPROTO_ICMP /* IP protocol family.  */
 #define IP_FAMILY AF_INET  /* IP version 6.  */
-#define SRC_IP 0		   /* IP protocol family.  */
-#define DST_IP 0xAC110002  /* 172.17.0.2  */
+#define SRC_IP 0xAC110002  /* IP protocol family.  */
+#define DST_IP 0		   /* 172.17.0.2  */
 #define SRC_PORT 0		   /* IP protocol family.  */
 #define DST_PORT 80		   /* IP version 6.  */
 
@@ -42,7 +42,8 @@
  * Constants that define the filter:
  * ipFamily: ipv4 or ipv6
  * protocol: TCP or UDP
- * TODO: destIP
+ * destIP
+ * srcIP
  * destPort
  * srcPort
  */
@@ -101,23 +102,25 @@ int _ingress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 
 	/* get IP transport protocol */
-	src_ip = iph->saddr;
-	dest_ip = iph->daddr;
+	src_ip = __bpf_ntohl(iph->saddr);
+	dest_ip = __bpf_ntohl(iph->daddr);
 	ipproto = iph->protocol;
 	bpf_debug("ip src %x ip dst %x", src_ip, dest_ip);
 
 	// if SRC_PORT specified check it
 	if (SRC_IP != 0 &&
-		dest_ip != SRC_IP)
+		src_ip != SRC_IP)
 	{
+		bpf_debug("ip src %x does not match %x", src_ip, SRC_IP);
 		return TC_ACT_OK;
 	}
 
 	// if DST_PORT specified check it
 	if (DST_IP != 0 &&
-		src_ip != DST_IP)
+		dest_ip != DST_IP)
 	{
-		return TC_ACT_SHOT;
+		bpf_debug("ip dest %x does not match %x", dest_ip, DST_IP);
+		return TC_ACT_OK;
 	}
 
 	/* get transport ports */
@@ -155,14 +158,15 @@ int _ingress(struct __sk_buff *skb)
 
 	// if SRC_PORT specified check it
 	if (SRC_PORT != 0 &&
-		dest_port != SRC_PORT)
+		src_port != SRC_PORT)
 	{
 		return TC_ACT_OK;
 	}
 
-	// if DST_PORT specified check it
+	// if DST_PORT specified drop it
+	// if it matches 5-tuple
 	if (DST_PORT != 0 &&
-		src_port != SRC_PORT)
+		dest_port != SRC_PORT)
 	{
 		return TC_ACT_SHOT;
 	}
