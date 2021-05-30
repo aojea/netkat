@@ -1,4 +1,4 @@
-package netkat
+package main
 
 import (
 	"encoding/binary"
