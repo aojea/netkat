@@ -14,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/cilium/ebpf"
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -33,7 +32,8 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
-//go:generate $HOME/go/bin/bpf2go filter bpf/filter.c -- -I/usr/include -I./bpf -nostdinc -O3
+//go:generate $HOME/go/bin/bpf2go tc_filter bpf/tc_filter.c -- -I/usr/include -I./bpf -nostdinc -O3
+//go:generate $HOME/go/bin/bpf2go sk_filter bpf/sk_filter.c -- -I/usr/include -I./bpf -nostdinc -O3
 
 const (
 	nicID   = 1
@@ -218,7 +218,7 @@ func main() {
 		log.Fatalf("unable to bind to %q: %v", "iface.Name", err)
 	}
 
-	spec, err := loadFilter()
+	spec, err := loadSk_filter()
 	if err != nil {
 		log.Fatalf("Error creating eBPF program: %v", err)
 	}
@@ -236,19 +236,13 @@ func main() {
 		log.Fatalf("Error rewriting eBPF program: %v", err)
 	}
 
-	coll, err := ebpf.NewCollection(spec)
-	if err != nil {
-		panic(err)
+	objs := sk_filterObjects{}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		log.Fatalf("failed to load objects: %v", err)
 	}
-	defer coll.Close()
+	defer objs.Close()
 
-	prog := coll.DetachProgram("socket_filter")
-	if prog == nil {
-		panic("no program named socket_filter found")
-	}
-	defer prog.Close()
-
-	bpfFd := prog.FD()
+	bpfFd := objs.Socket.FD()
 	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, bpfFd)
 	if err != nil {
 		log.Fatalf("unable to set BPF filter on socket: %v", err)
@@ -287,6 +281,31 @@ func main() {
 		}
 	}()
 
+	spec2, err := loadTc_filter()
+	if err != nil {
+		log.Fatalf("Error creating eBPF program: %v", err)
+	}
+
+	// TODO: IPv6
+	err = spec2.RewriteConstants(map[string]interface{}{
+		"PROTO":     uint8(transportProtocolNumber),
+		"IP_FAMILY": uint8(family),
+		"SRC_IP":    ip2int(sourceIP),
+		"DST_IP":    ip2int(destIP),
+		"SRC_PORT":  uint16(flagSrcPort),
+		"DST_PORT":  uint16(destPort),
+	})
+	if err != nil {
+		log.Fatalf("Error rewriting eBPF program: %v", err)
+	}
+
+	objs2 := tc_filterObjects{}
+	if err := spec.LoadAndAssign(&objs2, nil); err != nil {
+		log.Fatalf("failed to load objects: %v", err)
+	}
+	defer objs2.Close()
+
+	bpfFd2 := objs2.Ingress.FD()
 	// https://man7.org/linux/man-pages/man8/tc-bpf.8.html
 	ingressFilter := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -295,7 +314,7 @@ func main() {
 			Handle:    netlink.MakeHandle(0, 1),
 			Protocol:  unix.ETH_P_ALL,
 		},
-		Fd:           bpfFd,
+		Fd:           bpfFd2,
 		Name:         "nkFilter",
 		DirectAction: true,
 	}
