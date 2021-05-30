@@ -1,180 +1,106 @@
 #include <linux/bpf.h>
 #include <linux/in.h>
-#include <linux/types.h>
-#include <linux/pkt_cls.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
+#include <linux/if_vlan.h>
 #include <linux/ip.h>
-#include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
+#include <linux/pkt_cls.h>
 #include "bpf_helpers.h"
 #include "bpf_endian.h"
 
-/*
- * Constants that define the filter:
- * ipFamily: ipv4 or ipv6
- * protocol: TCP or UDP
- * TODO: destIP
- * destPort
- * srcPort
+#define DEBUG 1
+#ifdef DEBUG
+/* Only use this for debug output. Notice output from bpf_trace_printk()
+ * end-up in /sys/kernel/debug/tracing/trace_pipe
  */
-
-#define AF_INET	2	/* IP protocol family.  */
-#define AF_INET6	10	/* IP version 6.  */
-
-#define PROTO	IPPROTO_ICMP	/* IP protocol family.  */
-#define IP_FAMILY	AF_INET	/* IP version 6.  */
-#define SRC_PORT	0	/* IP protocol family.  */
-#define DST_PORT	8080	/* IP version 6.  */
-/* 
-static volatile unsigned const char PROTO;
-static volatile unsigned const char PROTO = IPPROTO_ICMP;
-
-static volatile unsigned const char IP_FAMILY;
-static volatile unsigned const char IP_FAMILY = AF_INET;
-
-static volatile unsigned const short SRC_PORT;
-static volatile unsigned const short SRC_PORT = 0;
-static volatile unsigned const short DST_PORT;
-static volatile unsigned const short DST_PORT = 0;
-*/
-
-/*
- * classifier return 1 if the packet matches the filter
- * 0 of it does not
- */
-
-int _packet_classifier(struct __sk_buff *skb)
-{
-     __u16 dst_port = 0;
-     __u16 src_port = 0;
-
-     void *data = (void *)(long)skb->data;
-     void *data_end = (void *)(long)skb->data_end;
-
-     // process IPv4
-     if  (skb->protocol == bpf_htons(ETH_P_IP) &&
-          IP_FAMILY == AF_INET) {
-          if (data + sizeof(struct iphdr) > data_end) { 
-               return 0; 
-          }
-          
-          struct iphdr *ip_hdr = data;
-          // TODO filter IP ip_src = iph->saddr;
-          // Print IP address (Note 127.0.0.1 <-> 2130706433)
-          __u32 sip = bpf_ntohl(ip_hdr->saddr);
-          bpf_trace_printk("ip_hdr->saddr: %lu\n", sip);
-          __u32 dip = bpf_ntohl(ip_hdr->daddr);
-          bpf_trace_printk("ip_hdr->daddr: %lu\n", dip);
-          
-          if (ip_hdr->protocol != PROTO) {
-               return 0;
-          }
-          __u8 *ihlandversion = data;
-          __u8 ihlen = (*ihlandversion & 0xf) * 4;
-          if (data + ihlen + sizeof(struct tcphdr) > data_end) { 
-               return 0; 
-          }
-          if (ip_hdr->protocol==17) {
-               struct udphdr *udp = data + ihlen;
-               src_port = __bpf_ntohs(udp->source);
-               dst_port = __bpf_ntohs(udp->dest);
-          } else {
-               struct tcphdr *tcp = data + ihlen;
-               src_port = __bpf_ntohs(tcp->source);
-               dst_port = __bpf_ntohs(tcp->dest);
-          }
-
-     // process IPv6
-     } else if (skb->protocol == bpf_htons(ETH_P_IPV6) &&
-          IP_FAMILY == AF_INET6) {
-          struct ipv6hdr *ipv6 = data;
-          __u8 ihlen = sizeof(struct ipv6hdr);
-          if (((void *) ipv6) + ihlen > data_end) { 
-               return 0; 
-          }
-
-          if (ipv6->nexthdr != PROTO) {
-               return 0;
-          }
-
-          if (((void *) ipv6) + ihlen + sizeof(struct tcphdr) > data_end) { 
-               return 0; 
-          }
-          if (ipv6->nexthdr==17) {
-               struct udphdr *udp = data + ihlen;
-               src_port = __bpf_ntohs(udp->source);
-               dst_port = __bpf_ntohs(udp->dest);
-          } else if (ipv6->nexthdr == 6) {
-               struct tcphdr *tcp = data + ihlen;
-               src_port = __bpf_ntohs(tcp->source);
-               dst_port = __bpf_ntohs(tcp->dest);
-          }
-
-     }
-
-
-     bpf_trace_printk("tcp_hdr->source: %u\n", src_port);
-     bpf_trace_printk("tcp_hdr->dest: %u\n", dst_port);
-
-     // if SRC_PORT specified check it
-     if (SRC_PORT != 0 &&
-          dst_port != SRC_PORT) {
-               return 0;
-          }
-
-     // same port tuple
-     // TODO: check ip addresses
-     if (dst_port == SRC_PORT) {
-               return 1;
-     }
-     return 0; /* no match */
-}
-
-/*
- * Capture the packets that match the filter
- */
-
-SEC("socket")
-int _socket_filter(struct __sk_buff *skb)
-{
-     void *data_end = (void *)(unsigned long long)skb->data_end;
-	void *data = (void *)(unsigned long long)skb->data;
-
-	if (data + sizeof(struct ethhdr) > data_end) {
-		return 0;
-     }
-
-     // allow arp
-     if (skb->protocol == bpf_htons(ETH_P_ARP)) {
-          return 1;
-     }
-     // TODO allow icmp ND
-
-     // allow packets mathing the filter
-     return _packet_classifier(skb);
-}
-
-/*
- * Drop the packets that doesn't match the filter
- */
+#define bpf_debug(fmt, ...)                            \
+	(                                                  \
+		{                                              \
+			char ____fmt[] = fmt;                      \
+			bpf_trace_printk(____fmt, sizeof(____fmt), \
+							 ##__VA_ARGS__);           \
+		})
+#else
+#define bpf_debug(fmt, ...) \
+	{                       \
+	}                       \
+	while (0)
+#endif
 
 SEC("classifier")
-int _tc_ingress(struct __sk_buff *skb)
+int _ingress(struct __sk_buff *skb)
 {
-     void *data_end = (void *)(unsigned long long)skb->data_end;
-	void *data = (void *)(unsigned long long)skb->data;
+	__be32 dest_ip = 0, src_ip = 0;
+	__be16 dest_port = 0, src_port = 0;
+	__u16 h_proto;
+	__u64 nh_off;
+	int ipproto;
 
-	if (data + sizeof(struct ethhdr) > data_end) {
-		return TC_ACT_SHOT;
-     }
+	void *data = (void *)(long)skb->data;
+	struct ethhdr *eth = data;
+	void *data_end = (void *)(long)skb->data_end;
 
-     // reject packets matching the filter
-     if (_packet_classifier(skb)) {
-          return TC_ACT_OK;
-     }
-     return TC_ACT_OK;
+	nh_off = sizeof(*eth);
+	if (data + nh_off > data_end)
+		return TC_ACT_OK;
+
+	/* allow arp */
+	h_proto = eth->h_proto;
+	if (h_proto == __constant_htons(ETH_P_RARP) ||
+		h_proto == __constant_htons(ETH_P_ARP))
+	{
+		return TC_ACT_OK;
+	}
+
+	/* allow non IPv4 */
+	if (h_proto != __constant_htons(ETH_P_IP))
+		return TC_ACT_OK;
+
+	/* get IP header */
+	struct iphdr *iph = data + nh_off;
+	if (iph + 1 > data_end)
+		return TC_ACT_OK;
+
+	/* get IP transport protocol */
+	src_ip = iph->saddr;
+	dest_ip = iph->daddr;
+	ipproto = iph->protocol;
+	bpf_debug("ip src %x ip dst %x", src_ip, dest_ip);
+
+	/* get transport ports */
+	struct udphdr *udph;
+	struct tcphdr *tcph;
+
+	switch (ipproto)
+	{
+	case IPPROTO_UDP:
+		udph = iph + 1;
+		if (udph + 1 > data_end)
+		{
+			bpf_debug("Invalid UDPv4 packet: L4off:%llu\n",
+					  sizeof(struct iphdr) + sizeof(struct udphdr));
+			return TC_ACT_OK;
+		}
+		src_port = __bpf_ntohs(udph->source);
+		dest_port = __bpf_ntohs(udph->dest);
+		break;
+	case IPPROTO_TCP:
+		tcph = iph + 1;
+		if (tcph + 1 > data_end)
+		{
+			bpf_debug("Invalid TCPv4 packet: L4off:%llu\n",
+					  sizeof(struct iphdr) + sizeof(struct tcphdr));
+			return TC_ACT_OK;
+		}
+		src_port = __bpf_ntohs(tcph->source);
+		dest_port = __bpf_ntohs(tcph->dest);
+		break;
+	}
+	bpf_debug("src port %x dst port %x", src_port, dest_port);
+
+	return TC_ACT_OK;
 }
 
 char _license[] SEC("license") = "GPL";
