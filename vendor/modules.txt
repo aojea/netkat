@@ -16,6 +16,9 @@ github.com/vishvananda/netlink
 github.com/vishvananda/netlink/nl
 # github.com/vishvananda/netns v0.0.0-20210104183010-2eb08e3e575f
 github.com/vishvananda/netns
+# golang.org/x/net v0.0.0-20201224014010-6772e930b67b
+## explicit
+golang.org/x/net/bpf
 # golang.org/x/sys v0.0.0-20210124154548-22da62e12c0c
 ## explicit
 golang.org/x/sys/internal/unsafeheader

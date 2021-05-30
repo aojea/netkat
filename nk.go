@@ -12,10 +12,10 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -32,8 +32,7 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
-//go:generate $HOME/go/bin/bpf2go tc_filter bpf/tc_filter.c -- -I/usr/include -I./bpf -nostdinc -O3
-//go:generate $HOME/go/bin/bpf2go sk_filter bpf/sk_filter.c -- -I/usr/include -I./bpf -nostdinc -O3
+//go:generate $HOME/go/bin/bpf2go filter bpf/filter.c -- -I/usr/include -I./bpf -nostdinc -O3
 
 const (
 	nicID   = 1
@@ -67,6 +66,13 @@ func main() {
 	var sourceIP net.IP
 	var destPort uint16
 
+	defer func() {
+		if err != nil {
+			log.Fatalln(err)
+		}
+		os.Exit(0)
+	}()
+
 	// Check permissions
 	cmd := exec.Command("id", "-u")
 	output, err := cmd.Output()
@@ -95,22 +101,22 @@ func main() {
 		}
 		ips, err := net.LookupHost(args[0])
 		if err != nil || len(ips) == 0 {
-			log.Fatalf("Invalid destination Host: %s", args[0])
+			log.Printf("Invalid destination Host: %s", args[0])
 		}
 		// use the first IP returned
 		// TODO: revisit in case we want to specify the IP family
 		destIP = net.ParseIP(ips[0])
 		if destIP == nil {
-			log.Fatalf("Invalid destination IP: %s", args[0])
+			log.Printf("Invalid destination IP: %s", args[0])
 		}
 		i, err := strconv.Atoi(args[1])
 		destPort = uint16(i)
 		if err != nil || destPort == 0 {
-			log.Fatalf("Invalid destination Port: %s", args[1])
+			log.Printf("Invalid destination Port: %s", args[1])
 		}
 	} else {
 		if flagSrcPort == 0 {
-			log.Fatalf("Source port required in listening mode")
+			log.Printf("Source port required in listening mode")
 		}
 	}
 
@@ -137,17 +143,20 @@ func main() {
 
 	// Enable signal handler
 	signalCh := make(chan os.Signal, 2)
+	done := make(chan bool, 1)
 	defer close(signalCh)
 	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
 	go func() {
 		<-signalCh
-		log.Fatal("Exiting: received signal")
+		log.Printf("Exiting: received signal")
+		done <- true
 	}()
 
 	// Detect interface name if needed
 	intfName, gw, err := getDefaultGatewayInterfaceByFamily(family)
 	if err != nil {
-		log.Fatalf("Fail to get default interface: %v", err)
+		log.Printf("Fail to get default interface: %v", err)
+		return
 	}
 
 	// override the interface if specified
@@ -157,18 +166,21 @@ func main() {
 
 	mtu, err := rawfile.GetMTU(intfName)
 	if err != nil {
-		log.Fatalf("Failed to get interface %s MTU: %v", intfName, err)
+		log.Printf("Failed to get interface %s MTU: %v", intfName, err)
+		return
 	}
 
 	ifaceLink, err := netlink.LinkByName(intfName)
 	if err != nil {
-		log.Fatalf("unable to bind to %q: %v", "1", err)
+		log.Printf("unable to bind to %q: %v", "1", err)
+		return
 	}
 
 	// Take over the interface addresses
 	addrs, err := netlink.AddrList(ifaceLink, netlink.FAMILY_ALL)
 	if err != nil {
-		log.Fatalf("Failed to list interface addresses: %v", err)
+		log.Printf("Failed to list interface addresses: %v", err)
+		return
 	}
 
 	for _, a := range addrs {
@@ -196,16 +208,19 @@ func main() {
 	// https: //github.com/google/gvisor/blob/108410638aa8480e82933870ba8279133f543d2b/test/benchmarks/tcp/tcp_proxy.go
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
-		log.Fatalf("Could not create socket: %s", err.Error())
+		log.Printf("Could not create socket: %s", err.Error())
+		return
 	}
 	defer unix.Close(fd)
 
 	if fd < 0 {
-		log.Fatalf("Socket error: return < 0")
+		log.Printf("Socket error: return < 0")
+		return
 	}
 
 	if err = unix.SetNonblock(fd, true); err != nil {
-		log.Fatalf("Error setting fd to nonblock: %s", err)
+		log.Printf("Error setting fd to nonblock: %s", err)
+		return
 	}
 
 	ll := unix.SockaddrLinklayer{
@@ -215,48 +230,102 @@ func main() {
 	}
 
 	if err := unix.Bind(fd, &ll); err != nil {
-		log.Fatalf("unable to bind to %q: %v", "iface.Name", err)
+		log.Printf("unable to bind to %q: %v", "iface.Name", err)
+		return
 	}
 
-	spec, err := loadSk_filter()
+	// Add a filter to the socket so we receive only the packets we are interested
+	// TODO we can make this more restrictive with source IP and source Port
+	// xref: https://blog.cloudflare.com/bpf-the-forgotten-bytecode/
+
+	// offset 23 protocol 6 TCP 17 UDP
+	bpfProto := uint32(6)
+	if flagUDP {
+		bpfProto = uint32(17)
+	}
+	bpfFilter := []bpf.Instruction{
+		// check the ethertype
+		bpf.LoadAbsolute{Off: 12, Size: 2},
+		// allow arp
+		bpf.JumpIf{Val: 0x0806, SkipTrue: 10},
+		// check is ipv4
+		bpf.JumpIf{Val: 0x0800, SkipFalse: 10},
+		// check the protocol
+		bpf.LoadAbsolute{Off: 23, Size: 1},
+		bpf.JumpIf{Val: bpfProto, SkipFalse: 8},
+		// check the source address
+		bpf.LoadAbsolute{Off: 26, Size: 4},
+		bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To4()), SkipFalse: 6},
+		// skip if offset non zero
+		bpf.LoadAbsolute{Off: 20, Size: 2},
+		bpf.JumpIf{Cond: bpf.JumpBitsSet, Val: 0x1fff, SkipTrue: 4},
+		// check the source port
+		bpf.LoadMemShift{Off: 14},
+		bpf.LoadIndirect{Off: 14, Size: 2},
+		bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1},
+		bpf.RetConstant{Val: 0xffff},
+		bpf.RetConstant{Val: 0x0},
+	}
+
+	if isIPv6 {
+		bpfFilter = []bpf.Instruction{
+			// check the ethertype
+			bpf.LoadAbsolute{Off: 12, Size: 2},
+			bpf.JumpIf{Val: 0x86dd, SkipFalse: 14},
+			// check the protocol
+			bpf.LoadAbsolute{Off: 20, Size: 1},
+			// allow icmpv6
+			bpf.JumpIf{Val: 58, SkipTrue: 11},
+			bpf.JumpIf{Val: bpfProto, SkipFalse: 11},
+			// check the source address
+			bpf.LoadAbsolute{Off: 22, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[0:4]), SkipFalse: 9},
+			bpf.LoadAbsolute{Off: 26, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[4:8]), SkipFalse: 7},
+			bpf.LoadAbsolute{Off: 30, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[8:12]), SkipFalse: 5},
+			bpf.LoadAbsolute{Off: 34, Size: 4},
+			bpf.JumpIf{Val: binary.BigEndian.Uint32(destIP.To16()[12:16]), SkipFalse: 3},
+			// check the source port
+			bpf.LoadAbsolute{Off: 54, Size: 2},
+			bpf.JumpIf{Val: uint32(destPort), SkipFalse: 1},
+			bpf.RetConstant{Val: 0xffff}, // accept
+			bpf.RetConstant{Val: 0x0},    // drop
+		}
+	}
+	filter, err := bpf.Assemble(bpfFilter)
 	if err != nil {
-		log.Fatalf("Error creating eBPF program: %v", err)
+		log.Printf("Failed to generate BPF assembler: %v", err)
+		return
 	}
 
-	// TODO: IPv6
-	err = spec.RewriteConstants(map[string]interface{}{
-		"PROTO":     uint8(transportProtocolNumber),
-		"IP_FAMILY": uint8(family),
-		"SRC_IP":    ip2int(sourceIP),
-		"DST_IP":    ip2int(destIP),
-		"SRC_PORT":  uint16(flagSrcPort),
-		"DST_PORT":  uint16(destPort),
-	})
+	f := make([]unix.SockFilter, len(filter))
+	for i := range filter {
+		f[i].Code = filter[i].Op
+		f[i].Jf = filter[i].Jf
+		f[i].Jt = filter[i].Jt
+		f[i].K = filter[i].K
+	}
+	fprog := &unix.SockFprog{
+		Len:    uint16(len(filter)),
+		Filter: &f[0],
+	}
+	err = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog)
 	if err != nil {
-		log.Fatalf("Error rewriting eBPF program: %v", err)
+		log.Printf("unable to set BPF filter on socket: %v", err)
+		return
 	}
-
-	objs := sk_filterObjects{}
-	if err := spec.LoadAndAssign(&objs, nil); err != nil {
-		log.Fatalf("failed to load objects: %v", err)
-	}
-	defer objs.Close()
-
-	bpfFd := objs.Socket.FD()
-	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, bpfFd)
-	if err != nil {
-		log.Fatalf("unable to set BPF filter on socket: %v", err)
-	}
-	defer syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, unix.SO_DETACH_BPF, bpfFd)
 
 	// RAW Sockets by default have a very small SO_RCVBUF of 256KB,
 	// up it to at least 4MB to reduce packet drops.
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, bufSize); err != nil {
-		log.Fatalf("setsockopt(..., SO_RCVBUF, %v,..) = %v", bufSize, err)
+		log.Printf("setsockopt(..., SO_RCVBUF, %v,..) = %v", bufSize, err)
+		return
 	}
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, bufSize); err != nil {
-		log.Fatalf("setsockopt(..., SO_SNDBUF, %v,..) = %v", bufSize, err)
+		log.Printf("setsockopt(..., SO_SNDBUF, %v,..) = %v", bufSize, err)
+		return
 	}
 
 	// filter on the host so our userspace connections are not resetted
@@ -273,21 +342,19 @@ func main() {
 		QdiscType: "clsact",
 	}
 	if err = netlink.QdiscAdd(qdisc); err != nil {
-		log.Fatalf("Failed to add qdisc: %v", err)
+		log.Printf("Failed to add qdisc: %v", err)
+		return
 	}
-	defer func() {
-		if err = netlink.QdiscDel(qdisc); err != nil {
-			log.Fatalf("Failed to del qdisc: %v", err)
-		}
-	}()
+	defer netlink.QdiscDel(qdisc)
 
-	spec2, err := loadTc_filter()
+	spec, err := loadFilter()
 	if err != nil {
-		log.Fatalf("Error creating eBPF program: %v", err)
+		log.Printf("Error creating eBPF program: %v", err)
+		return
 	}
 
 	// TODO: IPv6
-	err = spec2.RewriteConstants(map[string]interface{}{
+	err = spec.RewriteConstants(map[string]interface{}{
 		"PROTO":     uint8(transportProtocolNumber),
 		"IP_FAMILY": uint8(family),
 		"SRC_IP":    ip2int(sourceIP),
@@ -296,16 +363,18 @@ func main() {
 		"DST_PORT":  uint16(destPort),
 	})
 	if err != nil {
-		log.Fatalf("Error rewriting eBPF program: %v", err)
+		log.Printf("Error rewriting eBPF program: %v", err)
+		return
 	}
 
-	objs2 := tc_filterObjects{}
-	if err := spec.LoadAndAssign(&objs2, nil); err != nil {
-		log.Fatalf("failed to load objects: %v", err)
+	objs := filterObjects{}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		log.Printf("failed to load objects: %v", err)
+		return
 	}
-	defer objs2.Close()
+	defer objs.Close()
 
-	bpfFd2 := objs2.Ingress.FD()
+	bpfFd := objs.Ingress.FD()
 	// https://man7.org/linux/man-pages/man8/tc-bpf.8.html
 	ingressFilter := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
@@ -314,13 +383,14 @@ func main() {
 			Handle:    netlink.MakeHandle(0, 1),
 			Protocol:  unix.ETH_P_ALL,
 		},
-		Fd:           bpfFd2,
+		Fd:           bpfFd,
 		Name:         "nkFilter",
 		DirectAction: true,
 	}
 
 	if err := netlink.FilterAdd(ingressFilter); err != nil {
-		log.Fatalf("Failed to add filter: %v", err)
+		log.Printf("Failed to add filter: %v", err)
+		return
 	}
 	defer netlink.FilterDel(ingressFilter)
 
@@ -374,7 +444,8 @@ func main() {
 	})
 
 	if err := ipstack.CreateNIC(1, linkID); err != nil {
-		log.Fatalf("Failed to create userspace NIC: %v", err)
+		log.Printf("Failed to create userspace NIC: %v", err)
+		return
 	}
 
 	ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(sourceIP))
@@ -400,20 +471,26 @@ func main() {
 		if !flagUDP {
 			conn, err = dialTCP(ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
-				log.Fatalf("Can't connect to server: %s\n", err)
+				log.Printf("Can't connect to server: %s\n", err)
+				return
 			}
 		} else {
 			conn, err = gonet.DialUDP(ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
-				log.Fatalf("Can't connect to server: %s\n", err)
+				log.Printf("Can't connect to server: %s\n", err)
+				return
 			}
 		}
 		log.Printf("Connection established")
-		_, err = io.Copy(conn, os.Stdin)
-		if err != nil {
-			log.Fatalf("Connection error: %s\n", err)
-		}
-		os.Exit(0)
+		go func() {
+			_, err = io.Copy(conn, os.Stdin)
+			if err != nil {
+				log.Printf("Connection error: %s\n", err)
+				done <- true
+			}
+		}()
+		<-done
+		return
 	}
 
 	// server mode: socket(localhost,port) ---> stdin
