@@ -29,6 +29,35 @@
 	while (0)
 #endif
 
+#define AF_INET 2		   /* IP protocol family.  */
+#define AF_INET6 10		   /* IP version 6.  */
+#define PROTO IPPROTO_ICMP /* IP protocol family.  */
+#define IP_FAMILY AF_INET  /* IP version 6.  */
+#define SRC_PORT 0		   /* IP protocol family.  */
+#define DST_PORT 80		   /* IP version 6.  */
+
+/*
+ * Constants that define the filter:
+ * ipFamily: ipv4 or ipv6
+ * protocol: TCP or UDP
+ * TODO: destIP
+ * destPort
+ * srcPort
+ */
+
+/*
+static volatile unsigned const char PROTO;
+static volatile unsigned const char PROTO = IPPROTO_ICMP;
+
+static volatile unsigned const char IP_FAMILY;
+static volatile unsigned const char IP_FAMILY = 4;
+
+static volatile unsigned const short SRC_PORT;
+static volatile unsigned const short SRC_PORT = 0;
+static volatile unsigned const short DST_PORT;
+static volatile unsigned const short DST_PORT = 0;
+*/
+
 SEC("classifier")
 int _ingress(struct __sk_buff *skb)
 {
@@ -55,7 +84,8 @@ int _ingress(struct __sk_buff *skb)
 	}
 
 	/* allow non IPv4 */
-	if (h_proto != __constant_htons(ETH_P_IP))
+	if (h_proto != __constant_htons(ETH_P_IP) ||
+		IP_FAMILY != AF_INET)
 		return TC_ACT_OK;
 
 	/* get IP header */
@@ -97,8 +127,24 @@ int _ingress(struct __sk_buff *skb)
 		src_port = __bpf_ntohs(tcph->source);
 		dest_port = __bpf_ntohs(tcph->dest);
 		break;
+	default:
+		return TC_ACT_OK;
 	}
 	bpf_debug("src port %x dst port %x", src_port, dest_port);
+
+	// if SRC_PORT specified check it
+	if (SRC_PORT != 0 &&
+		dest_port != SRC_PORT)
+	{
+		return TC_ACT_OK;
+	}
+
+	// if DST_PORT specified check it
+	if (DST_PORT != 0 &&
+		src_port != SRC_PORT)
+	{
+		return TC_ACT_SHOT;
+	}
 
 	return TC_ACT_OK;
 }
