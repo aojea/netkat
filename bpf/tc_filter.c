@@ -29,14 +29,17 @@
 	while (0)
 #endif
 
-#define AF_INET 2		   /* IP protocol family.  */
-#define AF_INET6 10		   /* IP version 6.  */
-#define PROTO IPPROTO_ICMP /* IP protocol family.  */
-#define IP_FAMILY AF_INET  /* IP version 6.  */
-#define SRC_IP 0xAC110002  /* IP protocol family.  */
-#define DST_IP 0		   /* 172.17.0.2  */
-#define SRC_PORT 0		   /* IP protocol family.  */
-#define DST_PORT 80		   /* IP version 6.  */
+#define AF_INET 2	/* IP protocol family.  */
+#define AF_INET6 10 /* IP version 6.  */
+
+/*
+ * #define PROTO IPPROTO_ICMP 
+ * #define IP_FAMILY AF_INET		 
+ * #define SRC_IP 0xAC110002 
+ * #define DST_IP 0			   
+ * #define SRC_PORT 0		    
+ * #define DST_PORT 80		   
+*/
 
 /*
  * Constants that define the filter:
@@ -48,7 +51,6 @@
  * srcPort
  */
 
-/*
 static volatile unsigned const char IP_FAMILY;
 static volatile unsigned const char IP_FAMILY = 4;
 
@@ -64,7 +66,6 @@ static volatile unsigned const short SRC_PORT;
 static volatile unsigned const short SRC_PORT = 0;
 static volatile unsigned const short DST_PORT;
 static volatile unsigned const short DST_PORT = 0;
-*/
 
 SEC("classifier")
 int _ingress(struct __sk_buff *skb)
