@@ -1,6 +1,7 @@
 package netkat
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -164,6 +165,34 @@ func main() {
 		log.Fatalf("unable to bind to %q: %v", "1", err)
 	}
 
+	// Take over the interface addresses
+	addrs, err := netlink.AddrList(ifaceLink, netlink.FAMILY_ALL)
+	if err != nil {
+		log.Fatalf("Failed to list interface addresses: %v", err)
+	}
+
+	for _, a := range addrs {
+		// Use global addresses only
+		if !a.IP.IsGlobalUnicast() {
+			continue
+		}
+
+		// use same IP family
+		if isIPv6 != isIPv6Address(a.IP) {
+			continue
+		}
+
+		// We only need one IP address
+		// TODO: check how to handle multiple addresses
+		log.Printf("Using source address %s", a.IPNet.String())
+		sourceIP = a.IP
+		break
+	}
+
+	if sourceIP == nil {
+		log.Fatal("can't find a valid source address")
+	}
+
 	// https: //github.com/google/gvisor/blob/108410638aa8480e82933870ba8279133f543d2b/test/benchmarks/tcp/tcp_proxy.go
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
@@ -194,9 +223,12 @@ func main() {
 		log.Fatalf("Error creating eBPF program: %v", err)
 	}
 
+	// TODO: IPv6
 	err = spec.RewriteConstants(map[string]interface{}{
 		"PROTO":     uint8(transportProtocolNumber),
 		"IP_FAMILY": uint8(family),
+		"SRC_IP":    ip2int(sourceIP),
+		"DST_IP":    ip2int(destIP),
 		"SRC_PORT":  uint16(flagSrcPort),
 		"DST_PORT":  uint16(destPort),
 	})
@@ -326,33 +358,6 @@ func main() {
 		log.Fatalf("Failed to create userspace NIC: %v", err)
 	}
 
-	// Take over the interface addresses
-	addrs, err := netlink.AddrList(ifaceLink, netlink.FAMILY_ALL)
-	if err != nil {
-		log.Fatalf("Failed to list interface addresses: %v", err)
-	}
-
-	for _, a := range addrs {
-		// Use global addresses only
-		if !a.IP.IsGlobalUnicast() {
-			continue
-		}
-
-		// use same IP family
-		if isIPv6 != isIPv6Address(a.IP) {
-			continue
-		}
-
-		// We only need one IP address
-		// TODO: check how to handle multiple addresses
-		log.Printf("Using source address %s", a.IPNet.String())
-		sourceIP = a.IP
-		break
-	}
-
-	if sourceIP == nil {
-		log.Fatal("can't find a valid source address")
-	}
 	ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(sourceIP))
 	// use the address as source
 	laddr := tcpip.FullAddress{
@@ -504,4 +509,11 @@ func fullToTCPAddr(addr tcpip.FullAddress) *net.TCPAddr {
 
 func isIPv6Address(ip net.IP) bool {
 	return ip.To4() == nil && ip.To16() != nil
+}
+
+func ip2int(ip net.IP) uint32 {
+	if len(ip) == 16 {
+		return binary.BigEndian.Uint32(ip[12:16])
+	}
+	return binary.BigEndian.Uint32(ip)
 }
