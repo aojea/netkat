@@ -6,7 +6,7 @@ generate:
 
 build:
 	mkdir -p bin
-	docker run -i -t -v $$(pwd):/target aojea/ebpf-generate bash -c "cd /target && go build -o bin/netkat"
+	docker run -i -t -v $$(pwd):/target aojea/ebpf-generate bash -c "cd /target && CGO_ENABLED=0 go build -o bin/netkat"
 
 clean:
 	rm -rf bin
