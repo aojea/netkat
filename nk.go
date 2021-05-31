@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/vishvananda/netlink"
@@ -469,7 +471,9 @@ func main() {
 		}
 		var conn net.Conn
 		if !flagUDP {
-			conn, err = dialTCP(ipstack, &laddr, &dest, protocolNumber)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err = dialTCP(ctx, ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
 				log.Printf("Can't connect to server: %s\n", err)
 				return
@@ -554,7 +558,7 @@ func ipToStackAddress(ip net.IP) tcpip.Address {
 
 // dialTCP creates a new TCPConn connected to the specified address
 // with the option of adding a source address and port.
-func dialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
+func dialTCP(ctx context.Context, s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
 	// Create TCP endpoint, then connect.
 	var wq waiter.Queue
 	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
@@ -581,9 +585,20 @@ func dialTCP(s *stack.Stack, laddr, raddr *tcpip.FullAddress, network tcpip.Netw
 	wq.EventRegister(&waitEntry, waiter.WritableEvents)
 	defer wq.EventUnregister(&waitEntry)
 
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	err = ep.Connect(*raddr)
 	if _, ok := err.(*tcpip.ErrConnectStarted); ok {
-		<-notifyCh
+		select {
+		case <-ctx.Done():
+			ep.Close()
+			return nil, ctx.Err()
+		case <-notifyCh:
+		}
 		err = ep.LastError()
 	}
 	if err != nil {
