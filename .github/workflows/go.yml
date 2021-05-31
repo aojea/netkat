@@ -19,10 +19,7 @@ jobs:
 
     - name: check generated
       run: |
-        git status --porcelain=v1
-        if [[ $(git status --porcelain) ]]; then
-          exit 1
-        fi
+        [ -n "$(git status --porcelain=v1 2>/dev/null)" ] && exit 1
 
     - name: image
       run: make image
