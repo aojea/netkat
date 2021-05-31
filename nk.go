@@ -203,7 +203,7 @@ func netcat(args []string) error {
 	}
 
 	if sourceIP == nil {
-		log.Fatal("can't find a valid source address")
+		return fmt.Errorf("can't find a valid source address")
 	}
 
 	log.Printf("Creating raw socket")
