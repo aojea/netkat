@@ -165,18 +165,20 @@ int _ingress(struct __sk_buff *skb)
 	if (SRC_PORT != 0 &&
 		src_port != SRC_PORT)
 	{
+		bpf_debug("src port %x does not match %x", src_port, SRC_PORT);
 		return TC_ACT_OK;
 	}
 
-	// if DST_PORT specified drop it
-	// if it matches 5-tuple
+	// if DST_PORT specified check it
 	if (DST_PORT != 0 &&
 		dest_port != DST_PORT)
 	{
-		return TC_ACT_SHOT;
+		bpf_debug("dest port %x does not match %x", dest_port, DST_PORT);
+		return TC_ACT_OK;
 	}
-
-	return TC_ACT_OK;
+	// it matches 5-tuple, drop it like is hot
+	bpf_debug("dropping");
+	return TC_ACT_SHOT;
 }
 
 char _license[] SEC("license") = "GPL";
