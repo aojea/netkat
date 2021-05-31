@@ -63,17 +63,6 @@ func init() {
 }
 
 func main() {
-	var err error
-	var destIP net.IP
-	var sourceIP net.IP
-	var destPort uint16
-
-	defer func() {
-		if err != nil {
-			log.Fatalln(err)
-		}
-		os.Exit(0)
-	}()
 
 	// Check permissions
 	cmd := exec.Command("id", "-u")
@@ -95,30 +84,44 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
+	err = netcat(args)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	os.Exit(0)
+
+}
+
+func netcat(args []string) error {
+	var err error
+	var destIP net.IP
+	var sourceIP net.IP
+	var destPort uint16
+
 	// Validation
 	if !flagListen {
 		if len(args) != 2 {
 			flag.Usage()
-			os.Exit(1)
+			return fmt.Errorf("Wrong number of flags")
 		}
 		ips, err := net.LookupHost(args[0])
 		if err != nil || len(ips) == 0 {
-			log.Printf("Invalid destination Host: %s", args[0])
+			return errors.Wrapf(err, "Invalid destination Host: %s", args[0])
 		}
 		// use the first IP returned
 		// TODO: revisit in case we want to specify the IP family
 		destIP = net.ParseIP(ips[0])
 		if destIP == nil {
-			log.Printf("Invalid destination IP: %s", args[0])
+			return fmt.Errorf("Invalid destination IP: %s", args[0])
 		}
 		i, err := strconv.Atoi(args[1])
 		destPort = uint16(i)
 		if err != nil || destPort == 0 {
-			log.Printf("Invalid destination Port: %s", args[1])
+			return fmt.Errorf("Invalid destination Port: %s", args[1])
 		}
 	} else {
 		if flagSrcPort == 0 {
-			log.Printf("Source port required in listening mode")
+			return fmt.Errorf("Source port required in listening mode")
 		}
 	}
 
@@ -157,8 +160,7 @@ func main() {
 	// Detect interface name if needed
 	intfName, gw, err := getDefaultGatewayInterfaceByFamily(family)
 	if err != nil {
-		log.Printf("Fail to get default interface: %v", err)
-		return
+		return fmt.Errorf("Fail to get default interface: %v", err)
 	}
 
 	// override the interface if specified
@@ -168,21 +170,18 @@ func main() {
 
 	mtu, err := rawfile.GetMTU(intfName)
 	if err != nil {
-		log.Printf("Failed to get interface %s MTU: %v", intfName, err)
-		return
+		return fmt.Errorf("Failed to get interface %s MTU: %v", intfName, err)
 	}
 
 	ifaceLink, err := netlink.LinkByName(intfName)
 	if err != nil {
-		log.Printf("unable to bind to %q: %v", "1", err)
-		return
+		return fmt.Errorf("unable to bind to %q: %v", "1", err)
 	}
 
 	// Take over the interface addresses
 	addrs, err := netlink.AddrList(ifaceLink, netlink.FAMILY_ALL)
 	if err != nil {
-		log.Printf("Failed to list interface addresses: %v", err)
-		return
+		return fmt.Errorf("Failed to list interface addresses: %v", err)
 	}
 
 	for _, a := range addrs {
@@ -207,22 +206,20 @@ func main() {
 		log.Fatal("can't find a valid source address")
 	}
 
+	log.Printf("Creating raw socket")
 	// https: //github.com/google/gvisor/blob/108410638aa8480e82933870ba8279133f543d2b/test/benchmarks/tcp/tcp_proxy.go
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
-		log.Printf("Could not create socket: %s", err.Error())
-		return
+		return fmt.Errorf("Could not create socket: %s", err.Error())
 	}
 	defer unix.Close(fd)
 
 	if fd < 0 {
-		log.Printf("Socket error: return < 0")
-		return
+		return fmt.Errorf("Socket error: return < 0")
 	}
 
 	if err = unix.SetNonblock(fd, true); err != nil {
-		log.Printf("Error setting fd to nonblock: %s", err)
-		return
+		return fmt.Errorf("Error setting fd to nonblock: %s", err)
 	}
 
 	ll := unix.SockaddrLinklayer{
@@ -232,8 +229,7 @@ func main() {
 	}
 
 	if err := unix.Bind(fd, &ll); err != nil {
-		log.Printf("unable to bind to %q: %v", "iface.Name", err)
-		return
+		return fmt.Errorf("unable to bind to %q: %v", "iface.Name", err)
 	}
 
 	// Add a filter to the socket so we receive only the packets we are interested
@@ -297,8 +293,7 @@ func main() {
 	}
 	filter, err := bpf.Assemble(bpfFilter)
 	if err != nil {
-		log.Printf("Failed to generate BPF assembler: %v", err)
-		return
+		return fmt.Errorf("Failed to generate BPF assembler: %v", err)
 	}
 
 	f := make([]unix.SockFilter, len(filter))
@@ -314,22 +309,20 @@ func main() {
 	}
 	err = unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog)
 	if err != nil {
-		log.Printf("unable to set BPF filter on socket: %v", err)
-		return
+		return fmt.Errorf("unable to set BPF filter on socket: %v", err)
 	}
 
 	// RAW Sockets by default have a very small SO_RCVBUF of 256KB,
 	// up it to at least 4MB to reduce packet drops.
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, bufSize); err != nil {
-		log.Printf("setsockopt(..., SO_RCVBUF, %v,..) = %v", bufSize, err)
-		return
+		return fmt.Errorf("setsockopt(..., SO_RCVBUF, %v,..) = %v", bufSize, err)
 	}
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, bufSize); err != nil {
-		log.Printf("setsockopt(..., SO_SNDBUF, %v,..) = %v", bufSize, err)
-		return
+		return fmt.Errorf("setsockopt(..., SO_SNDBUF, %v,..) = %v", bufSize, err)
 	}
 
+	log.Printf("Adding ebpf ingress filter on interface %s", ifaceLink.Attrs().Name)
 	// filter on the host so our userspace connections are not resetted
 	// using tc since they are at the beginning of the pipeline
 	// # add an ingress qdisc
@@ -344,15 +337,13 @@ func main() {
 		QdiscType: "clsact",
 	}
 	if err = netlink.QdiscAdd(qdisc); err != nil {
-		log.Printf("Failed to add qdisc: %v", err)
-		return
+		return fmt.Errorf("Failed to add qdisc: %v", err)
 	}
 	defer netlink.QdiscDel(qdisc)
 
 	spec, err := loadFilter()
 	if err != nil {
-		log.Printf("Error creating eBPF program: %v", err)
-		return
+		return fmt.Errorf("Error creating eBPF program: %v", err)
 	}
 
 	// TODO: IPv6
@@ -365,14 +356,12 @@ func main() {
 		"DST_PORT":  uint16(destPort),
 	})
 	if err != nil {
-		log.Printf("Error rewriting eBPF program: %v", err)
-		return
+		return fmt.Errorf("Error rewriting eBPF program: %v", err)
 	}
 
 	objs := filterObjects{}
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {
-		log.Printf("failed to load objects: %v", err)
-		return
+		return fmt.Errorf("failed to load objects: %v", err)
 	}
 	defer objs.Close()
 
@@ -391,11 +380,11 @@ func main() {
 	}
 
 	if err := netlink.FilterAdd(ingressFilter); err != nil {
-		log.Printf("Failed to add filter: %v", err)
-		return
+		return fmt.Errorf("Failed to add filter: %v", err)
 	}
 	defer netlink.FilterDel(ingressFilter)
 
+	log.Printf("Creating user TCP/IP stack")
 	// add the socket to the userspace stack
 	la := tcpip.LinkAddress(ifaceLink.Attrs().HardwareAddr)
 
@@ -429,7 +418,6 @@ func main() {
 	})
 	defer func() {
 		ipstack.Close()
-		ipstack.Wait()
 	}()
 	// Add IPv4 and IPv6 default routes, so all traffic goes through the fake NIC
 	subnet, _ := tcpip.NewSubnet(tcpip.Address(strings.Repeat("\x00", 4)), tcpip.AddressMask(strings.Repeat("\x00", 4)))
@@ -446,8 +434,7 @@ func main() {
 	})
 
 	if err := ipstack.CreateNIC(1, linkID); err != nil {
-		log.Printf("Failed to create userspace NIC: %v", err)
-		return
+		return fmt.Errorf("Failed to create userspace NIC: %v", err)
 	}
 
 	ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(sourceIP))
@@ -470,19 +457,19 @@ func main() {
 			Port: destPort,
 		}
 		var conn net.Conn
+		log.Printf("Dialing ...")
 		if !flagUDP {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			conn, err = dialTCP(ctx, ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
-				log.Printf("Can't connect to server: %s\n", err)
-				return
+				log.Printf("Dialing error: %s\n", err)
+				return fmt.Errorf("Can't connect to server: %s\n", err)
 			}
 		} else {
 			conn, err = gonet.DialUDP(ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
-				log.Printf("Can't connect to server: %s\n", err)
-				return
+				return fmt.Errorf("Can't connect to server: %s\n", err)
 			}
 		}
 		log.Printf("Connection established")
@@ -493,8 +480,9 @@ func main() {
 				done <- true
 			}
 		}()
+		// the signal handler can unblock this too
 		<-done
-		return
+		return err
 	}
 
 	// server mode: socket(localhost,port) ---> stdin
@@ -503,6 +491,7 @@ func main() {
 	} else {
 
 	}
+	return err
 }
 
 // getDefaultGatewayInterfaceByFamily return the default gw interface and IP
