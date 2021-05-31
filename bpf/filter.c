@@ -171,7 +171,7 @@ int _ingress(struct __sk_buff *skb)
 	// if DST_PORT specified drop it
 	// if it matches 5-tuple
 	if (DST_PORT != 0 &&
-		dest_port != SRC_PORT)
+		dest_port != DST_PORT)
 	{
 		return TC_ACT_SHOT;
 	}
