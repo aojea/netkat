@@ -175,7 +175,7 @@ func netcat(args []string) error {
 
 	ifaceLink, err := netlink.LinkByName(intfName)
 	if err != nil {
-		return fmt.Errorf("unable to bind to %q: %v", "1", err)
+		return fmt.Errorf("unable to bind to %q: %v", intfName, err)
 	}
 
 	// Take over the interface addresses
