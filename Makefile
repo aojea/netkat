@@ -1,6 +1,12 @@
+docker:
+	docker build -t aojea/ebpf-generate -f Dockerfile .
+
 generate:
-	go get github.com/cilium/ebpf/cmd/bpf2go
-	go generate
+	docker run -i -t -v $$(pwd):/target aojea/ebpf-generate bash -c "cd /target && go generate"
 
 build:
-	go build
+	mkdir -p bin
+	docker run -i -t -v $$(pwd):/target aojea/ebpf-generate bash -c "cd /target && go build -o bin/netkat"
+
+clean:
+	rm -rf bin

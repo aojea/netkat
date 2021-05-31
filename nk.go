@@ -34,7 +34,7 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
-//go:generate $HOME/go/bin/bpf2go filter bpf/filter.c -- -I/usr/include -I./bpf -nostdinc -O3
+//go:generate bpf2go filter bpf/filter.c -- -I/usr/include -I./bpf -nostdinc -O3
 
 const (
 	nicID   = 1
