@@ -10,7 +10,7 @@
 #include "bpf_helpers.h"
 #include "bpf_endian.h"
 
-#define DEBUG 1
+// #define DEBUG 1
 #ifdef DEBUG
 /* Only use this for debug output. Notice output from bpf_trace_printk()
  * end-up in /sys/kernel/debug/tracing/trace_pipe
