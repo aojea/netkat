@@ -370,7 +370,7 @@ func netcat(args []string) error {
 	ingressFilter := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: ifaceLink.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
 			Handle:    netlink.MakeHandle(0, 1),
 			Protocol:  unix.ETH_P_ALL,
 		},
