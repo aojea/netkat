@@ -93,7 +93,7 @@ int _ingress(struct __sk_buff *skb)
 	}
 
 	/* allow non IPv4 */
-	if (h_proto != __constant_htons(ETH_P_IP) ||
+	if (h_proto != __constant_htons(ETH_P_IP) &&
 		IP_FAMILY != AF_INET)
 		return TC_ACT_OK;
 
