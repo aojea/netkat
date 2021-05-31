@@ -17,5 +17,9 @@ jobs:
     - name: build
       run: make all
 
+    - name: check generated
+      run: |
+        [ -z "$(git status --porcelain=v1 2>/dev/null)" ] && exit 1
+
     - name: image
       run: make image
