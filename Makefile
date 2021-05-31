@@ -10,3 +10,5 @@ build:
 
 clean:
 	rm -rf bin
+
+all: docker generate build
