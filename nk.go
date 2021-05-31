@@ -350,10 +350,10 @@ func netcat(args []string) error {
 	err = spec.RewriteConstants(map[string]interface{}{
 		"PROTO":     uint8(transportProtocolNumber),
 		"IP_FAMILY": uint8(family),
-		"SRC_IP":    ip2int(sourceIP),
-		"DST_IP":    ip2int(destIP),
-		"SRC_PORT":  uint16(flagSrcPort),
-		"DST_PORT":  uint16(destPort),
+		"SRC_IP":    ip2int(destIP),
+		"DST_IP":    ip2int(sourceIP),
+		"SRC_PORT":  uint16(destPort),
+		"DST_PORT":  uint16(flagSrcPort),
 	})
 	if err != nil {
 		return fmt.Errorf("Error rewriting eBPF program: %v", err)
@@ -379,6 +379,7 @@ func netcat(args []string) error {
 		DirectAction: true,
 	}
 
+	log.Printf("filter %v", ingressFilter.String())
 	if err := netlink.FilterAdd(ingressFilter); err != nil {
 		return fmt.Errorf("Failed to add filter: %v", err)
 	}
