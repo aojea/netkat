@@ -474,15 +474,24 @@ func netcat(args []string) error {
 			}
 		}
 		log.Printf("Connection established")
+		errCh := make(chan error, 2)
 		go func() {
 			_, err = io.Copy(conn, os.Stdin)
-			if err != nil {
-				log.Printf("Connection error: %s\n", err)
-				done <- true
-			}
+			errCh <- err
+		}()
+		go func() {
+			_, err = io.Copy(os.Stdout, conn)
+			errCh <- err
 		}()
 		// the signal handler can unblock this too
-		<-done
+		select {
+		case err = <-errCh:
+			log.Printf("Connection error: %v", err)
+		case <-done:
+			log.Printf("Done")
+		}
+		// give a chance to terminate gracefully
+		time.Sleep(500 * time.Millisecond)
 		return err
 	}
 

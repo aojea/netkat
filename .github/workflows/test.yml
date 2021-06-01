@@ -28,7 +28,4 @@ jobs:
       run: make image
 
     - name: test
-      run: |
-        cd tests
-        cp ../bin/netkat .
-        bats tests.bats
+      run: make test
