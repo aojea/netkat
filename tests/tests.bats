@@ -33,65 +33,65 @@ teardown() {
 }
 
 @test "TCP connect without iptables" {
-    sudo ip netns exec SouthNS sh -c "nc -l 9090 > /tmp/test_output.log" 3>&- &
-    sudo ip netns exec NorthNS sh -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
 
 @test "TCP connect without iptables long file" {
-    sudo ip netns exec SouthNS sh -c "nc -l 9090 > /tmp/test_output.log" 3>&- &
-    sudo ip netns exec NorthNS sh -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
 
 @test "TCP connect with iptables in output" {
     # add iptables rule to block traffic
-    sudo ip netns exec NorthNS sh -c "iptables -A OUTPUT -d 1.1.1.2 -j DROP"
+    sudo ip netns exec NorthNS bash -c "iptables -A OUTPUT -d 1.1.1.2 -j DROP"
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
-    sudo ip netns exec SouthNS sh -c "nc -l 9090 > /tmp/test_output.log" 3>&- &
-    sudo ip netns exec NorthNS sh -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
 
 @test "TCP connect with iptables in output long file" {
     # add iptables rule to block traffic
-    sudo ip netns exec NorthNS sh -c "iptables -A OUTPUT -d 1.1.1.2 -j DROP"
+    sudo ip netns exec NorthNS bash -c "iptables -A OUTPUT -d 1.1.1.2 -j DROP"
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
-    sudo ip netns exec SouthNS sh -c "nc -l 9090 > /tmp/test_output.log" 3>&- &
-    sudo ip netns exec NorthNS sh -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
 
 @test "TCP connect with iptables in input" {
     # add iptables rule to block traffic
-    sudo ip netns exec NorthNS sh -c "iptables -A INPUT -s 1.1.1.2 -j DROP"
+    sudo ip netns exec NorthNS bash -c "iptables -A INPUT -s 1.1.1.2 -j DROP"
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
-    sudo ip netns exec SouthNS sh -c "nc -l 9090 > /tmp/test_output.log" 3>&- &
-    sudo ip netns exec NorthNS sh -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
 
 @test "TCP connect with iptables in input long file" {
     # add iptables rule to block traffic
-    sudo ip netns exec NorthNS sh -c "iptables -A INPUT -s 1.1.1.2 -j DROP"
+    sudo ip netns exec NorthNS bash -c "iptables -A INPUT -s 1.1.1.2 -j DROP"
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
-    sudo ip netns exec SouthNS sh -c "nc -l 9090 > /tmp/test_output.log" 3>&- &
-    sudo ip netns exec NorthNS sh -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
