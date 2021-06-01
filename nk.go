@@ -84,7 +84,29 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	err = netcat(args)
+	// trap Ctrl+C and call cancel on the context
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+
+	// Enable signal handler
+	signalCh := make(chan os.Signal, 2)
+	defer func() {
+		close(signalCh)
+		cancel()
+	}()
+
+	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
+	go func() {
+		select {
+		case <-signalCh:
+			log.Printf("Exiting: received signal")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	// run netcat
+	err = netcat(ctx, args)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -92,7 +114,7 @@ func main() {
 
 }
 
-func netcat(args []string) error {
+func netcat(ctx context.Context, args []string) error {
 	var err error
 	var destIP net.IP
 	var sourceIP net.IP
@@ -145,17 +167,6 @@ func netcat(args []string) error {
 		networkProtocol = ipv6.NewProtocol
 		family = netlink.FAMILY_V6
 	}
-
-	// Enable signal handler
-	signalCh := make(chan os.Signal, 2)
-	done := make(chan bool, 1)
-	defer close(signalCh)
-	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
-	go func() {
-		<-signalCh
-		log.Printf("Exiting: received signal")
-		done <- true
-	}()
 
 	// Detect interface name if needed
 	intfName, gw, err := getDefaultGatewayInterfaceByFamily(family)
@@ -460,9 +471,9 @@ func netcat(args []string) error {
 		var conn net.Conn
 		log.Printf("Dialing ...")
 		if !flagUDP {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			conn, err = dialTCP(ctx, ipstack, &laddr, &dest, protocolNumber)
+			ctxConnect, cancelConnect := context.WithTimeout(ctx, 5*time.Second)
+			defer cancelConnect()
+			conn, err = dialTCP(ctxConnect, ipstack, &laddr, &dest, protocolNumber)
 			if err != nil {
 				log.Printf("Dialing error: %s\n", err)
 				return fmt.Errorf("Can't connect to server: %s\n", err)
@@ -487,7 +498,7 @@ func netcat(args []string) error {
 		select {
 		case err = <-errCh:
 			log.Printf("Connection error: %v", err)
-		case <-done:
+		case <-ctx.Done():
 			log.Printf("Done")
 		}
 		// give a chance to terminate gracefully
