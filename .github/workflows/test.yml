@@ -37,6 +37,8 @@ jobs:
       run: make image
 
     - name: test
+      shell: 'script -q -e -c "bash {0}"'
       run: |
         export TERM=dumb
-        make test
+        cd tests
+        bats tests.bats
