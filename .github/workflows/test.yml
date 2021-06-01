@@ -42,3 +42,11 @@ jobs:
         export TERM=dumb
         cd tests
         bats tests.bats
+
+    - name: debug failures
+      if: failure()
+      run: |
+        sudo ps axf
+        sudo ip netns
+        sudo ip route
+        sudo ss -apn
