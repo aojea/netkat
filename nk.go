@@ -121,30 +121,26 @@ func netcat(ctx context.Context, args []string) error {
 	var destPort uint16
 
 	// Validation
-	if !flagListen {
-		if len(args) != 2 {
-			flag.Usage()
-			return fmt.Errorf("Wrong number of flags")
-		}
-		ips, err := net.LookupHost(args[0])
-		if err != nil || len(ips) == 0 {
-			return errors.Wrapf(err, "Invalid destination Host: %s", args[0])
-		}
-		// use the first IP returned
-		// TODO: revisit in case we want to specify the IP family
-		destIP = net.ParseIP(ips[0])
-		if destIP == nil {
-			return fmt.Errorf("Invalid destination IP: %s", args[0])
-		}
-		i, err := strconv.Atoi(args[1])
-		destPort = uint16(i)
-		if err != nil || destPort == 0 {
-			return fmt.Errorf("Invalid destination Port: %s", args[1])
-		}
-	} else {
-		if flagSrcPort == 0 {
-			return fmt.Errorf("Source port required in listening mode")
-		}
+	// In connect mode, the hostname and port arguments tell what to connect.
+	// In listen mode, hostname and port control the address the server will bind to.
+	if len(args) != 2 {
+		flag.Usage()
+		return fmt.Errorf("Wrong number of flags")
+	}
+	ips, err := net.LookupHost(args[0])
+	if err != nil || len(ips) == 0 {
+		return errors.Wrapf(err, "Invalid destination Host: %s", args[0])
+	}
+	// use the first IP returned
+	// TODO: revisit in case we want to specify the IP family
+	destIP = net.ParseIP(ips[0])
+	if destIP == nil {
+		return fmt.Errorf("Invalid destination IP: %s", args[0])
+	}
+	i, err := strconv.Atoi(args[1])
+	destPort = uint16(i)
+	if err != nil || destPort == 0 {
+		return fmt.Errorf("Invalid destination Port: %s", args[1])
 	}
 
 	// Defaulting
@@ -168,10 +164,10 @@ func netcat(ctx context.Context, args []string) error {
 		family = netlink.FAMILY_V6
 	}
 
-	// Detect interface name if needed
-	intfName, gw, err := getDefaultGatewayInterfaceByFamily(family)
+	// Get output interface, sourceIP and gw (if needed)
+	intfName, gw, sourceIP, err := getConnectionDetails(destIP)
 	if err != nil {
-		return fmt.Errorf("Fail to get default interface: %v", err)
+		return fmt.Errorf("Fail to get interface for IP %s: %v", destIP.String(), err)
 	}
 
 	// override the interface if specified
@@ -187,34 +183,6 @@ func netcat(ctx context.Context, args []string) error {
 	ifaceLink, err := netlink.LinkByName(intfName)
 	if err != nil {
 		return fmt.Errorf("unable to bind to %q: %v", intfName, err)
-	}
-
-	// Take over the interface addresses
-	addrs, err := netlink.AddrList(ifaceLink, netlink.FAMILY_ALL)
-	if err != nil {
-		return fmt.Errorf("Failed to list interface addresses: %v", err)
-	}
-
-	for _, a := range addrs {
-		// Use global addresses only
-		if !a.IP.IsGlobalUnicast() {
-			continue
-		}
-
-		// use same IP family
-		if isIPv6 != isIPv6Address(a.IP) {
-			continue
-		}
-
-		// We only need one IP address
-		// TODO: check how to handle multiple addresses
-		log.Printf("Using source address %s", a.IPNet.String())
-		sourceIP = a.IP
-		break
-	}
-
-	if sourceIP == nil {
-		return fmt.Errorf("can't find a valid source address")
 	}
 
 	log.Printf("Creating raw socket")
@@ -515,26 +483,23 @@ func netcat(ctx context.Context, args []string) error {
 	return err
 }
 
-// getDefaultGatewayInterfaceByFamily return the default gw interface and IP
-func getDefaultGatewayInterfaceByFamily(family int) (string, net.IP, error) {
-	// filter the default route to obtain the gateway
-	filter := &netlink.Route{Dst: nil}
-	routes, err := netlink.RouteListFiltered(family, filter, netlink.RT_FILTER_DST)
+// getConnectionDetails return the output interface, the source IP used
+// and the IP address of the gateway
+func getConnectionDetails(dst net.IP) (string, net.IP, net.IP, error) {
+	routes, err := netlink.RouteGet(dst)
 	if err != nil {
-		return "", nil, errors.Wrapf(err, "failed to get routing table in node")
+		return "", nil, nil, errors.Wrapf(err, "failed to get routing table in node")
 	}
-	// use the first valid default gateway
+	// use the first valid route
 	for _, r := range routes {
+		log.Println("routes", r)
 		// no multipath
 		if len(r.MultiPath) == 0 {
 			intfLink, err := netlink.LinkByIndex(r.LinkIndex)
 			if err != nil {
 				continue
 			}
-			if r.Gw == nil {
-				continue
-			}
-			return intfLink.Attrs().Name, r.Gw, nil
+			return intfLink.Attrs().Name, r.Gw, r.Src, nil
 		}
 
 		// multipath, use the first valid entry
@@ -545,13 +510,10 @@ func getDefaultGatewayInterfaceByFamily(family int) (string, net.IP, error) {
 			if err != nil {
 				continue
 			}
-			if nh.Gw == nil {
-				continue
-			}
-			return intfLink.Attrs().Name, nh.Gw, nil
+			return intfLink.Attrs().Name, nh.Gw, r.Src, nil
 		}
 	}
-	return "", net.IP{}, fmt.Errorf("failed to get default gateway interface")
+	return "", net.IP{}, net.IP{}, fmt.Errorf("failed to get default gateway interface")
 }
 
 // htons converts a short (uint16) from host-to-network byte order.
@@ -637,4 +599,12 @@ func ip2int(ip net.IP) uint32 {
 		return binary.BigEndian.Uint32(ip[12:16])
 	}
 	return binary.BigEndian.Uint32(ip)
+}
+
+// newIPNet generates an IPNet from an ip address using a netmask of 32 or 128.
+func newIPNet(ip net.IP) *net.IPNet {
+	if ip.To4() != nil {
+		return &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)}
+	}
+	return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 }

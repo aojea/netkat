@@ -14,9 +14,6 @@ setup() {
     sudo ip netns exec NorthNS ip link set up dev vethNorth
     sudo ip netns exec NorthNS ip addr add 1.1.1.1/24 dev vethNorth
     
-    # TODO remove default gw dependency
-    sudo ip netns exec NorthNS ip route add default via 1.1.1.2
-
     sudo ip netns exec SouthNS ip link set up dev lo
     sudo ip netns exec SouthNS ip link set up dev vethSouth
     sudo ip netns exec SouthNS ip addr add 1.1.1.2/24 dev vethSouth
