@@ -17,6 +17,10 @@ jobs:
     - name: Setup BATS
       run: sudo apt-get -y install bats
 
+    - name: enable IP forwarding
+      run: |
+        sysctl -w net.ipv4.ip_forward=1
+
     - uses: actions/checkout@v2
 
     - name: build
