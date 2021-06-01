@@ -12,7 +12,7 @@ image: build
 	docker build -t aojea/netkat -f Dockerfile.netkat .
 
 test:
-	cd tests && bats -T tests.bats
+	cd tests && bats tests.bats
 
 clean:
 	rm -rf bin
