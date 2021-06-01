@@ -36,6 +36,9 @@ jobs:
     - name: image
       run: make image
 
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
+
     - name: test
       run: |
         export TERM=dumb
