@@ -34,4 +34,6 @@ jobs:
       run: make image
 
     - name: test
-      run: make test
+      run: |
+        export TERM=dumb
+        make test
