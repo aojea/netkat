@@ -1,6 +1,5 @@
 #!/usr/bin/env bats
 
-set -x
 setup() {
     # Create test namespaces
     sudo ip netns add NorthNS
