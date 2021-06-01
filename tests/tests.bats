@@ -28,7 +28,7 @@ setup() {
 
 teardown() {
     # Remove hanging processes
-    # Some netcat versions doesn't exit after client closing
+    # Some netcat versions doesn't exit after client closing the connection
     sudo bash -c "ip netns pids SouthNS | xargs kill"
     # Delete namespaces
     sudo ip netns del NorthNS
@@ -36,14 +36,14 @@ teardown() {
 }
 
 @test "TCP connect without iptables" {
-    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 1> /tmp/test_output.log 2>/dev/null 3>&- &" 3>&-
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
 
 @test "TCP connect without iptables long file" {
-    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 1> /tmp/test_output.log 2>/dev/null 3>&- &" 3>&-
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -56,7 +56,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
-    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 1> /tmp/test_output.log 2>/dev/null 3>&- &" 3>&-
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -68,7 +68,7 @@ teardown() {
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
-    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 1> /tmp/test_output.log 2>/dev/null 3>&- &" 3>&-
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -81,7 +81,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
-    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 1> /tmp/test_output.log 2>/dev/null 3>&- &" 3>&-
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -93,7 +93,7 @@ teardown() {
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
-    sudo ip netns exec SouthNS bash -c "nc -l 9090 > /tmp/test_output.log 3>&- &"
+    sudo ip netns exec SouthNS bash -c "nc -l 9090 1> /tmp/test_output.log 2>/dev/null 3>&- &" 3>&-
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
