@@ -26,3 +26,9 @@ jobs:
 
     - name: image
       run: make image
+
+    - name: test
+      run: |
+        cd tests
+        cp ../bin/netkat .
+        bats tests.bats
