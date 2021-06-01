@@ -19,7 +19,7 @@ jobs:
 
     - name: enable IP forwarding
       run: |
-        sysctl -w net.ipv4.ip_forward=1
+        sudo sysctl -w net.ipv4.ip_forward=1
 
     - uses: actions/checkout@v2
 
