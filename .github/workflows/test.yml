@@ -15,7 +15,7 @@ jobs:
     steps:
 
     - name: Setup BATS
-      run: sudo apt-get -y install bats
+      run: sudo apt-get -y install bats ncat
 
     - name: enable IP forwarding
       run: |

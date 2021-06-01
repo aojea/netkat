@@ -27,6 +27,9 @@ setup() {
 }
 
 teardown() {
+    # Remove hanging processes
+    # Some netcat versions doesn't exit after client closing
+    sudo bash -c "ip netns pids SouthNS | xargs kill"
     # Delete namespaces
     sudo ip netns del NorthNS
     sudo ip netns del SouthNS
