@@ -41,7 +41,7 @@ teardown() {
 }
 
 @test "TCP connect without iptables" {
-    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -61,7 +61,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
-    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -73,7 +73,7 @@ teardown() {
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
-    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -86,7 +86,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
-    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -98,7 +98,7 @@ teardown() {
     # verify it actually drops traffic
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
-    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
