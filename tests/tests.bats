@@ -22,8 +22,8 @@ setup() {
     sudo ip netns exec SouthNS ping -c 2 1.1.1.1
 
     # Create file with random data
-    cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 128 | head -n 1 > /tmp/test_short.log
-    cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 8128 | head -n 1 > /tmp/test_long.log
+    cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 128 | head -n 1 > /tmp/test_short.log
+    cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 8128 | head -n 1 > /tmp/test_long.log
 }
 
 teardown() {
