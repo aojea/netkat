@@ -30,6 +30,7 @@ jobs:
       run: |
         git status --porcelain=v1
         if [[ $(git status --porcelain) ]]; then
+          git diff
           exit 1
         fi
 
