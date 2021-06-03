@@ -387,6 +387,9 @@ func netcat(ctx context.Context, args []string) error {
 			}
 		},
 	})
+	if err != nil {
+		return fmt.Errorf("Can't create user-space link: %v\n", err)
+	}
 
 	if flagDebug {
 		linkID = sniffer.New(linkID)
