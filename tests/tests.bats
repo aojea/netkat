@@ -167,3 +167,131 @@ teardown() {
     run diff /tmp/test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
+
+@test "TCP listen without iptables" {
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | nc 1.1.1.2 9090"
+    run diff /tmp/test_short.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "TCP listen without iptables long file" {
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | nc 9090"
+    run diff /tmp/test_long.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "TCP listen with iptables in output" {
+    # add iptables rule to block traffic
+    sudo ip netns exec SouthNS bash -c "iptables -A OUTPUT -s 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    # verify netkat can send traffic anyway
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | nc 1.1.1.2 9090"
+    run diff /tmp/test_short.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "TCP listen with iptables in output long file" {
+    # add iptables rule to block traffic
+    sudo ip netns exec SouthNS bash -c "iptables -A OUTPUT -s 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | nc 1.1.1.2 9090"
+    run diff /tmp/test_long.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "TCP listen with iptables in input" {
+    # add iptables rule to block traffic
+    sudo ip netns exec NorthNS bash -c "iptables -A INPUT -d 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    # verify netkat can send traffic anyway
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | nc 1.1.1.2 9090"
+    run diff /tmp/test_short.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "TCP listen with iptables in input long file" {
+    # add iptables rule to block traffic
+    sudo ip netns exec NorthNS bash -c "iptables -A INPUT -d 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | nc 1.1.1.2 9090"
+    run diff /tmp/test_long.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "UDP listen without iptables" {
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | nc -u 1.1.1.2 9090"
+    run diff /tmp/test_short.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "UDP listen without iptables long file" {
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | nc -u 1.1.1.2 9090"
+    run diff /tmp/test_long.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "UDP listen with iptables in output" {
+    # add iptables rule to block traffic
+    sudo ip netns exec SouthNS bash -c "iptables -A OUTPUT -s 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    # verify netkat --udp can send traffic anyway
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | nc -u 1.1.1.2 9090"
+    run diff /tmp/test_short.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "UDP listen with iptables in output long file" {
+    # add iptables rule to block traffic
+    sudo ip netns exec SouthNS bash -c "iptables -A OUTPUT -s 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | nc -u 1.1.1.2 9090"
+    run diff /tmp/test_long.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "UDP listen with iptables in input" {
+    # add iptables rule to block traffic
+    sudo ip netns exec NorthNS bash -c "iptables -A INPUT -d 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    # verify netkat --udp can send traffic anyway
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_short.log | nc -u 1.1.1.2 9090"
+    run diff /tmp/test_short.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
+
+@test "UDP listen with iptables in input long file" {
+    # add iptables rule to block traffic
+    sudo ip netns exec NorthNS bash -c "iptables -A INPUT -d 1.1.1.2 -j DROP"
+    # verify it actually drops traffic
+    run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
+    [ "$status" -eq 1 ]
+    sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
+    sudo ip netns exec NorthNS bash -c "cat /tmp/test_long.log | nc -u 1.1.1.2 9090"
+    run diff /tmp/test_long.log /tmp/test_output.log
+    [ "$status" -eq 0 ]
+}
