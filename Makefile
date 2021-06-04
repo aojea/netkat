@@ -1,5 +1,5 @@
 docker:
-	docker build -t aojea/ebpf-generate -f Dockerfile .
+	docker build --no-cache -t aojea/ebpf-generate -f Dockerfile .
 
 generate:
 	docker run -v $$(pwd):/target aojea/ebpf-generate bash -c "cd /target && go generate"
