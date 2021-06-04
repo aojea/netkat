@@ -29,6 +29,7 @@ teardown() {
     # Delete namespaces
     sudo ip netns del NorthNS
     sudo ip netns del SouthNS
+    sudo rm -f /tmp/test_output.log
 }
 
 @test "TCP failt to connect" {
