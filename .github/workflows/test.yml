@@ -7,6 +7,11 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+
+env:
+  # use a pinned image to generate the eBPF code
+  TAG_GENERATE_IMAGE: "a71424e"
+
 jobs:
 
   build:
@@ -14,7 +19,7 @@ jobs:
     timeout-minutes: 15
     steps:
 
-    - name: Setup BATS
+    - name: Install test dependencies
       run: sudo apt-get -y install bats ncat
 
     - name: enable IP forwarding
@@ -26,13 +31,8 @@ jobs:
     - name: build
       run: make all
 
-    - name: check generated
-      run: |
-        git status --porcelain=v1
-        if [[ $(git status --porcelain) ]]; then
-          git diff
-          exit 1
-        fi
+    - name: verify
+      run: make verify
 
     - name: image
       run: make image
