@@ -10,7 +10,7 @@ export GO111MODULE CGO_ENABLED TAG_GENERATE_IMAGE
 generate:
 	hack/update-generated.sh
 
-build:
+build: generate
 	mkdir -p bin
 	docker run -v $$(pwd):/target aojea/ebpf-generate:$(TAG_GENERATE_IMAGE) bash -c "cd /target && CGO_ENABLED=0 go build -o bin/netkat"
 
@@ -26,4 +26,4 @@ verify:
 clean:
 	rm -rf bin
 
-all: generate build
+all: build
