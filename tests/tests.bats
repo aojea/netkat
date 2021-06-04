@@ -229,6 +229,7 @@ teardown() {
 }
 
 @test "UDP listen without iptables" {
+    skip "not implemented yet"
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -u 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
@@ -236,6 +237,7 @@ teardown() {
 }
 
 @test "UDP listen without iptables long file" {
+    skip "not implemented yet"
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -u 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
@@ -243,6 +245,7 @@ teardown() {
 }
 
 @test "UDP listen with iptables in output" {
+    skip "not implemented yet"
     # add iptables rule to block traffic
     sudo ip netns exec SouthNS bash -c "iptables -A OUTPUT -s 1.1.1.2 -j DROP"
     # verify it actually drops traffic
@@ -256,6 +259,7 @@ teardown() {
 }
 
 @test "UDP listen with iptables in output long file" {
+    skip "not implemented yet"
     # add iptables rule to block traffic
     sudo ip netns exec SouthNS bash -c "iptables -A OUTPUT -s 1.1.1.2 -j DROP"
     # verify it actually drops traffic
@@ -268,6 +272,7 @@ teardown() {
 }
 
 @test "UDP listen with iptables in input" {
+    skip "not implemented yet"
     # add iptables rule to block traffic
     sudo ip netns exec NorthNS bash -c "iptables -A INPUT -d 1.1.1.2 -j DROP"
     # verify it actually drops traffic
@@ -281,6 +286,7 @@ teardown() {
 }
 
 @test "UDP listen with iptables in input long file" {
+    skip "not implemented yet"
     # add iptables rule to block traffic
     sudo ip netns exec NorthNS bash -c "iptables -A INPUT -d 1.1.1.2 -j DROP"
     # verify it actually drops traffic
