@@ -797,16 +797,15 @@ func listen(ctx context.Context, args []string) error {
 				return
 			}
 			log.Printf("incoming connection established.")
+			defer inConn.Close()
 
 			// process connection
 			go func() {
 				_, err = io.Copy(inConn, os.Stdin)
 				errCh <- err
 			}()
-			go func() {
-				_, err = io.Copy(os.Stdout, inConn)
-				errCh <- err
-			}()
+			_, err = io.Copy(os.Stdout, inConn)
+			errCh <- err
 
 		}()
 		// the signal handler can unblock this too
