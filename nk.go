@@ -26,6 +26,7 @@ var (
 	flagDebug     bool
 	flagSrcPort   int
 	flagInterface string
+	flagWait      int
 )
 
 func init() {
@@ -39,6 +40,8 @@ func init() {
 	flag.IntVar(&flagSrcPort, "p", 0, "Specify source port to use on connections")
 	flag.StringVar(&flagInterface, "interface", "", "Specify interface to use. Default interface with default route")
 	flag.StringVar(&flagInterface, "i", "", "Specify interface to use. Default interface with default route")
+	flag.IntVar(&flagWait, "wait", 5, "Connect timeout")
+	flag.IntVar(&flagWait, "w", 5, "Connect timeout")
 
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: nk [options] [hostname] [port]\n\n"+
