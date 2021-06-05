@@ -30,10 +30,15 @@ var (
 
 func init() {
 	flag.BoolVar(&flagListen, "listen", false, "Bind and listen for incoming connections")
+	flag.BoolVar(&flagListen, "l", false, "Bind and listen for incoming connections")
 	flag.BoolVar(&flagUDP, "udp", false, "Use UDP instead of default TCP")
+	flag.BoolVar(&flagUDP, "u", false, "Use UDP instead of default TCP")
 	flag.BoolVar(&flagDebug, "debug", false, "Debug")
+	flag.BoolVar(&flagDebug, "d", false, "Debug")
 	flag.IntVar(&flagSrcPort, "source-port", 0, "Specify source port to use on connections")
+	flag.IntVar(&flagSrcPort, "p", 0, "Specify source port to use on connections")
 	flag.StringVar(&flagInterface, "interface", "", "Specify interface to use. Default interface with default route")
+	flag.StringVar(&flagInterface, "i", "", "Specify interface to use. Default interface with default route")
 
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, "Usage: nk [options] [hostname] [port]\n\n"+
