@@ -40,7 +40,7 @@ jobs:
     - name: test
       run: |
         cd tests
-        bats tests.bats
+        timeout 5m bats tests.bats
 
     - name: debug failures
       if: failure()
