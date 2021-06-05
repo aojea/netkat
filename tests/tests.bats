@@ -168,7 +168,7 @@ teardown() {
 @test "TCP listen without iptables" {
     sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
     sleep 1
-    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -v -w 5 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -176,7 +176,7 @@ teardown() {
 @test "TCP listen without iptables long file" {
     sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
     sleep 1
-    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -v -w 5 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -189,7 +189,7 @@ teardown() {
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
     sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -v -w 5 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -201,7 +201,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -v -w 5 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -214,7 +214,7 @@ teardown() {
     [ "$status" -eq 1 ]
     # verify netkat can send traffic anyway
     sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -v -w 5 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -226,7 +226,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     sudo ip netns exec SouthNS bash -c '../bin/netkat --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -v -w 5 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -234,7 +234,7 @@ teardown() {
 @test "UDP listen without iptables" {
     skip "not implemented yet"
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -u 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -v -w 5 -u 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -242,7 +242,7 @@ teardown() {
 @test "UDP listen without iptables long file" {
     skip "not implemented yet"
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -u 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -v -w 5 -u 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -256,7 +256,7 @@ teardown() {
     [ "$status" -eq 1 ]
     # verify netkat --udp can send traffic anyway
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -u 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -v -w 5 -u 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -269,7 +269,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -u 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -v -w 5 -u 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -283,7 +283,7 @@ teardown() {
     [ "$status" -eq 1 ]
     # verify netkat --udp can send traffic anyway
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -u 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_short.log | nc -v -w 5 -u 1.1.1.2 9090"
     run diff ./test_short.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
@@ -296,7 +296,7 @@ teardown() {
     run sudo ip netns exec NorthNS ping -c 1 1.1.1.2
     [ "$status" -eq 1 ]
     sudo ip netns exec SouthNS bash -c '../bin/netkat --udp --listen 1.1.1.2 9090 > /tmp/test_output.log' 3>&- &
-    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -u 1.1.1.2 9090"
+    sudo ip netns exec NorthNS bash -c "cat ./test_long.log | nc -v -w 5 -u 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
 }
