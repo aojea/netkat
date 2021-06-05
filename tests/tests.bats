@@ -45,7 +45,7 @@ teardown() {
 }
 
 @test "TCP connect without iptables long file" {
-    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat ./test_long.log | ../bin/netkat 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
@@ -109,7 +109,7 @@ teardown() {
 }
 
 @test "UDP connect without iptables long file" {
-    sudo ip netns exec SouthNS bash -c 'nc -u -l 9090 > /tmp/test_output.log' &
+    sudo ip netns exec SouthNS bash -c 'nc -u -l 9090 > /tmp/test_output.log' 3>&- &
     sudo ip netns exec NorthNS bash -c "cat ./test_long.log | ../bin/netkat --udp 1.1.1.2 9090"
     run diff ./test_long.log /tmp/test_output.log
     [ "$status" -eq 0 ]
