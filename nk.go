@@ -53,7 +53,18 @@ func init() {
 
 func main() {
 
-	// Check permissions
+	// Check system requirements
+
+	// Kernel must be > 5.2
+	k, m, err := getKernelVersion()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if k < 5 || k == 5 && m < 2 {
+		log.Fatalf("Host Kernel (%d.%d) does not meet minimum required version: (%d.%d)",
+			k, m, 5, 2)
+	}
+
 	cmd := exec.Command("id", "-u")
 	output, err := cmd.Output()
 	if err != nil {
@@ -112,4 +123,24 @@ func main() {
 	}
 	os.Exit(0)
 
+}
+
+func getKernelVersion() (kernel, major int, err error) {
+	uts := unix.Utsname{}
+	if err = unix.Uname(&uts); err != nil {
+		return
+	}
+
+	ba := make([]byte, 0, len(uts.Release))
+	for _, b := range uts.Release {
+		if b == 0 {
+			break
+		}
+		ba = append(ba, byte(b))
+	}
+	var rest string
+	if n, _ := fmt.Sscanf(string(ba), "%d.%d%s", &kernel, &major, &rest); n < 2 {
+		err = fmt.Errorf("can't parse kernel version in %q", string(ba))
+	}
+	return
 }
