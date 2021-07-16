@@ -5,7 +5,8 @@ netcat version using raw sockets to avoid iptables and/or other OS filtering mec
 ## Requirements
 
 It only works on Linux with a Kernel version > 5.2
-It requires CAP_NET_RAW privileges
+It requires CAP_NET_RAW and CAP_SYS_RESOURCE capabilities
+... or just run it with `sudo` ;)
 
 ## Install
 
