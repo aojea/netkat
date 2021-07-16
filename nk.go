@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"strconv"
 
 	"golang.org/x/sys/unix"
+
+	"kernel.org/pub/linux/libs/security/libcap/cap"
 )
 
 //go:generate bpf2go filter bpf/filter.c -- -I/usr/include -I./bpf -nostdinc -O3
@@ -65,19 +65,13 @@ func main() {
 			k, m, 5, 2)
 	}
 
-	cmd := exec.Command("id", "-u")
-	output, err := cmd.Output()
-	if err != nil {
-		log.Fatal(err)
+	c := cap.GetProc()
+	if on, _ := c.GetFlag(cap.Permitted, cap.NET_RAW); !on {
+		log.Fatalf("insufficient privilege to open RAW sockets - want %q, have %q", cap.NET_RAW, c)
 	}
 
-	// 0 = root, 501 = non-root user
-	i, err := strconv.Atoi(string(output[:len(output)-1]))
-	if err != nil {
-		log.Fatal(err)
-	}
-	if i != 0 {
-		log.Fatal("This program must be run as root! (sudo)")
+	if on, _ := c.GetFlag(cap.Permitted, cap.SYS_RESOURCE); !on {
+		log.Fatalf("insufficient privilege to set rlimit - want %q, have %q", cap.SYS_RESOURCE, c)
 	}
 
 	// Parse command line flags and arguments

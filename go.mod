@@ -9,4 +9,5 @@ require (
 	golang.org/x/net v0.0.0-20201224014010-6772e930b67b
 	golang.org/x/sys v0.0.0-20210124154548-22da62e12c0c
 	gvisor.dev/gvisor v0.0.0-20210506004418-fbfeba3024f0
+	kernel.org/pub/linux/libs/security/libcap/cap v1.2.51
 )
