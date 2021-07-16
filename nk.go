@@ -110,6 +110,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Increase rlimit so the eBPF map and program can be loaded.
+	if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{
+		Cur: unix.RLIM_INFINITY,
+		Max: unix.RLIM_INFINITY,
+	}); err != nil {
+		log.Fatalf("setting temporary rlimit: %s", err)
+	}
+
 	if !flagListen {
 		err = connect(ctx, args)
 		if err != nil {
