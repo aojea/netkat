@@ -2,6 +2,11 @@
 
 netcat version using raw sockets to avoid iptables and/or other OS filtering mechanisms.
 
+## Requirements
+
+It only works on Linux with a Kernel version > 5.2
+It requires CAP_NET_RAW privileges
+
 ## Install
 
 ```sh
