@@ -62,3 +62,8 @@ gvisor.dev/gvisor/pkg/tcpip/transport/tcp
 gvisor.dev/gvisor/pkg/tcpip/transport/tcpconntrack
 gvisor.dev/gvisor/pkg/tcpip/transport/udp
 gvisor.dev/gvisor/pkg/waiter
+# kernel.org/pub/linux/libs/security/libcap/cap v1.2.51
+## explicit
+kernel.org/pub/linux/libs/security/libcap/cap
+# kernel.org/pub/linux/libs/security/libcap/psx v1.2.51
+kernel.org/pub/linux/libs/security/libcap/psx
