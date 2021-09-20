@@ -61,3 +61,6 @@ It also creates an ingress queue and attaches an eBPF filter, to drop the traffi
 the connection directed to the RAW socket, preventing that the host stack drops the
 connection.
 
+## References
+
+- [eCHO episode 14: netkat with Antonio Ojea](https://hackmd.io/@Echo-Live/014)
