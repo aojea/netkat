@@ -23,8 +23,10 @@ import (
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/buffer"
+	"gvisor.dev/gvisor/pkg/tcpip/hash/jenkins"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/header/parse"
+	"gvisor.dev/gvisor/pkg/tcpip/internal/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/raw"
@@ -48,10 +50,6 @@ const (
 
 	// MaxBufferSize is the largest size a receive/send buffer can grow to.
 	MaxBufferSize = 4 << 20 // 4MB
-
-	// MaxUnprocessedSegments is the maximum number of unprocessed segments
-	// that can be queued for a given endpoint.
-	MaxUnprocessedSegments = 300
 
 	// DefaultTCPLingerTimeout is the amount of time that sockets linger in
 	// FIN_WAIT_2 state before being marked closed.
@@ -96,6 +94,11 @@ type protocol struct {
 	maxRetries                 uint32
 	synRetries                 uint8
 	dispatcher                 dispatcher
+
+	// The following secrets are initialized once and stay unchanged after.
+	seqnumSecret     uint32
+	portOffsetSecret uint32
+	tsOffsetSecret   uint32
 }
 
 // Number returns the tcp protocol number.
@@ -105,7 +108,7 @@ func (*protocol) Number() tcpip.TransportProtocolNumber {
 
 // NewEndpoint creates a new tcp endpoint.
 func (p *protocol) NewEndpoint(netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) (tcpip.Endpoint, tcpip.Error) {
-	return newEndpoint(p.stack, netProto, waiterQueue), nil
+	return newEndpoint(p.stack, p, netProto, waiterQueue), nil
 }
 
 // NewRawEndpoint creates a new raw TCP endpoint. Raw TCP sockets are currently
@@ -131,7 +134,7 @@ func (*protocol) ParsePorts(v buffer.View) (src, dst uint16, err tcpip.Error) {
 // goroutine which is responsible for dequeuing and doing full TCP dispatch of
 // the packet.
 func (p *protocol) QueuePacket(ep stack.TransportEndpoint, id stack.TransportEndpointID, pkt *stack.PacketBuffer) {
-	p.dispatcher.queuePacket(ep, id, pkt)
+	p.dispatcher.queuePacket(ep, id, p.stack.Clock(), pkt)
 }
 
 // HandleUnknownDestinationPacket handles packets targeted at this protocol but
@@ -142,18 +145,36 @@ func (p *protocol) QueuePacket(ep stack.TransportEndpoint, id stack.TransportEnd
 // particular, SYNs addressed to a non-existent connection are rejected by this
 // means."
 func (p *protocol) HandleUnknownDestinationPacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) stack.UnknownDestinationPacketDisposition {
-	s := newIncomingSegment(id, pkt)
+	s := newIncomingSegment(id, p.stack.Clock(), pkt)
 	defer s.decRef()
 
 	if !s.parse(pkt.RXTransportChecksumValidated) || !s.csumValid {
 		return stack.UnknownDestinationPacketMalformed
 	}
 
-	if !s.flagIsSet(header.TCPFlagRst) {
+	if !s.flags.Contains(header.TCPFlagRst) {
 		replyWithReset(p.stack, s, stack.DefaultTOS, 0)
 	}
 
 	return stack.UnknownDestinationPacketHandled
+}
+
+func (p *protocol) tsOffset(src, dst tcpip.Address) tcp.TSOffset {
+	// Initialize a random tsOffset that will be added to the recentTS
+	// everytime the timestamp is sent when the Timestamp option is enabled.
+	//
+	// See https://tools.ietf.org/html/rfc7323#section-5.4 for details on
+	// why this is required.
+	//
+	// TODO(https://gvisor.dev/issues/6473): This is not really secure as
+	// it does not use the recommended algorithm linked above.
+	h := jenkins.Sum32(p.tsOffsetSecret)
+	// Per hash.Hash.Writer:
+	//
+	// It never returns an error.
+	_, _ = h.Write([]byte(src))
+	_, _ = h.Write([]byte(dst))
+	return tcp.NewTSOffset(h.Sum32())
 }
 
 // replyWithReset replies to the given segment with a reset segment.
@@ -181,7 +202,7 @@ func replyWithReset(st *stack.Stack, s *segment, tos, ttl uint8) tcpip.Error {
 	//   reset has sequence number zero and the ACK field is set to the sum
 	//   of the sequence number and segment length of the incoming segment.
 	//   The connection remains in the CLOSED state.
-	if s.flagIsSet(header.TCPFlagAck) {
+	if s.flags.Contains(header.TCPFlagAck) {
 		seq = s.ackNumber
 	} else {
 		flags |= header.TCPFlagAck
@@ -292,22 +313,26 @@ func (p *protocol) SetOption(option tcpip.SettableTransportProtocolOption) tcpip
 
 	case *tcpip.TCPMinRTOOption:
 		p.mu.Lock()
+		defer p.mu.Unlock()
 		if *v < 0 {
 			p.minRTO = MinRTO
+		} else if minRTO := time.Duration(*v); minRTO <= p.maxRTO {
+			p.minRTO = minRTO
 		} else {
-			p.minRTO = time.Duration(*v)
+			return &tcpip.ErrInvalidOptionValue{}
 		}
-		p.mu.Unlock()
 		return nil
 
 	case *tcpip.TCPMaxRTOOption:
 		p.mu.Lock()
+		defer p.mu.Unlock()
 		if *v < 0 {
 			p.maxRTO = MaxRTO
+		} else if maxRTO := time.Duration(*v); maxRTO >= p.minRTO {
+			p.maxRTO = maxRTO
 		} else {
-			p.maxRTO = time.Duration(*v)
+			return &tcpip.ErrInvalidOptionValue{}
 		}
-		p.mu.Unlock()
 		return nil
 
 	case *tcpip.TCPMaxRetriesOption:
@@ -401,7 +426,7 @@ func (p *protocol) Option(option tcpip.GettableTransportProtocolOption) tcpip.Er
 
 	case *tcpip.TCPTimeWaitReuseOption:
 		p.mu.RLock()
-		*v = tcpip.TCPTimeWaitReuseOption(p.timeWaitReuse)
+		*v = p.timeWaitReuse
 		p.mu.RUnlock()
 		return nil
 
@@ -478,9 +503,16 @@ func NewProtocol(s *stack.Stack) stack.TransportProtocol {
 		minRTO:                     MinRTO,
 		maxRTO:                     MaxRTO,
 		maxRetries:                 MaxRetries,
-		// TODO(gvisor.dev/issue/5243): Set recovery to tcpip.TCPRACKLossDetection.
-		recovery: 0,
+		recovery:                   tcpip.TCPRACKLossDetection,
+		seqnumSecret:               s.Rand().Uint32(),
+		portOffsetSecret:           s.Rand().Uint32(),
+		tsOffsetSecret:             s.Rand().Uint32(),
 	}
-	p.dispatcher.init(runtime.GOMAXPROCS(0))
+	p.dispatcher.init(s.Rand(), runtime.GOMAXPROCS(0))
 	return &p
+}
+
+// protocolFromStack retrieves the tcp.protocol instance from stack s.
+func protocolFromStack(s *stack.Stack) *protocol {
+	return s.TransportProtocolInstance(ProtocolNumber).(*protocol)
 }

@@ -16,7 +16,7 @@ package ip
 
 import "gvisor.dev/gvisor/pkg/tcpip"
 
-// LINT.IfChange(MultiCounterIPStats)
+// LINT.IfChange(MultiCounterIPForwardingStats)
 
 // MultiCounterIPForwardingStats holds IP forwarding statistics. Each counter
 // may have several versions.
@@ -38,10 +38,39 @@ type MultiCounterIPForwardingStats struct {
 	// because they contained a link-local destination address.
 	LinkLocalDestination tcpip.MultiCounterStat
 
+	// PacketTooBig is the number of IP packets which were dropped because they
+	// were too big for the outgoing MTU.
+	PacketTooBig tcpip.MultiCounterStat
+
+	// HostUnreachable is the number of IP packets received which could not be
+	// successfully forwarded due to an unresolvable next hop.
+	HostUnreachable tcpip.MultiCounterStat
+
+	// ExtensionHeaderProblem is the number of IP packets which were dropped
+	// because of a problem encountered when processing an IPv6 extension
+	// header.
+	ExtensionHeaderProblem tcpip.MultiCounterStat
+
 	// Errors is the number of IP packets received which could not be
 	// successfully forwarded.
 	Errors tcpip.MultiCounterStat
 }
+
+// Init sets internal counters to track a and b counters.
+func (m *MultiCounterIPForwardingStats) Init(a, b *tcpip.IPForwardingStats) {
+	m.Unrouteable.Init(a.Unrouteable, b.Unrouteable)
+	m.Errors.Init(a.Errors, b.Errors)
+	m.LinkLocalSource.Init(a.LinkLocalSource, b.LinkLocalSource)
+	m.LinkLocalDestination.Init(a.LinkLocalDestination, b.LinkLocalDestination)
+	m.ExtensionHeaderProblem.Init(a.ExtensionHeaderProblem, b.ExtensionHeaderProblem)
+	m.PacketTooBig.Init(a.PacketTooBig, b.PacketTooBig)
+	m.ExhaustedTTL.Init(a.ExhaustedTTL, b.ExhaustedTTL)
+	m.HostUnreachable.Init(a.HostUnreachable, b.HostUnreachable)
+}
+
+// LINT.ThenChange(:MultiCounterIPForwardingStats, ../../../tcpip.go:IPForwardingStats)
+
+// LINT.IfChange(MultiCounterIPStats)
 
 // MultiCounterIPStats holds IP statistics, each counter may have several
 // versions.
@@ -49,6 +78,10 @@ type MultiCounterIPStats struct {
 	// PacketsReceived is the number of IP packets received from the link
 	// layer.
 	PacketsReceived tcpip.MultiCounterStat
+
+	// ValidPacketsReceived is the number of valid IP packets that reached the IP
+	// layer.
+	ValidPacketsReceived tcpip.MultiCounterStat
 
 	// DisabledPacketsReceived is the number of IP packets received from
 	// the link layer when the IP layer is disabled.
@@ -63,8 +96,8 @@ type MultiCounterIPStats struct {
 	// wire.
 	InvalidSourceAddressesReceived tcpip.MultiCounterStat
 
-	// PacketsDelivered is the number of incoming IP packets that are
-	// successfully delivered to the transport layer.
+	// PacketsDelivered is the number of incoming IP packets successfully
+	// delivered to the transport layer.
 	PacketsDelivered tcpip.MultiCounterStat
 
 	// PacketsSent is the number of IP packets sent via WritePacket.
@@ -89,6 +122,10 @@ type MultiCounterIPStats struct {
 	// IPTablesInputDropped is the number of IP packets dropped in the
 	// Input chain.
 	IPTablesInputDropped tcpip.MultiCounterStat
+
+	// IPTablesForwardDropped is the number of IP packets dropped in the
+	// Forward chain.
+	IPTablesForwardDropped tcpip.MultiCounterStat
 
 	// IPTablesOutputDropped is the number of IP packets dropped in the
 	// Output chain.
@@ -120,17 +157,9 @@ type MultiCounterIPStats struct {
 }
 
 // Init sets internal counters to track a and b counters.
-func (m *MultiCounterIPForwardingStats) Init(a, b *tcpip.IPForwardingStats) {
-	m.Unrouteable.Init(a.Unrouteable, b.Unrouteable)
-	m.Errors.Init(a.Errors, b.Errors)
-	m.LinkLocalSource.Init(a.LinkLocalSource, b.LinkLocalSource)
-	m.LinkLocalDestination.Init(a.LinkLocalDestination, b.LinkLocalDestination)
-	m.ExhaustedTTL.Init(a.ExhaustedTTL, b.ExhaustedTTL)
-}
-
-// Init sets internal counters to track a and b counters.
 func (m *MultiCounterIPStats) Init(a, b *tcpip.IPStats) {
 	m.PacketsReceived.Init(a.PacketsReceived, b.PacketsReceived)
+	m.ValidPacketsReceived.Init(a.ValidPacketsReceived, b.ValidPacketsReceived)
 	m.DisabledPacketsReceived.Init(a.DisabledPacketsReceived, b.DisabledPacketsReceived)
 	m.InvalidDestinationAddressesReceived.Init(a.InvalidDestinationAddressesReceived, b.InvalidDestinationAddressesReceived)
 	m.InvalidSourceAddressesReceived.Init(a.InvalidSourceAddressesReceived, b.InvalidSourceAddressesReceived)
@@ -141,6 +170,7 @@ func (m *MultiCounterIPStats) Init(a, b *tcpip.IPStats) {
 	m.MalformedFragmentsReceived.Init(a.MalformedFragmentsReceived, b.MalformedFragmentsReceived)
 	m.IPTablesPreroutingDropped.Init(a.IPTablesPreroutingDropped, b.IPTablesPreroutingDropped)
 	m.IPTablesInputDropped.Init(a.IPTablesInputDropped, b.IPTablesInputDropped)
+	m.IPTablesForwardDropped.Init(a.IPTablesForwardDropped, b.IPTablesForwardDropped)
 	m.IPTablesOutputDropped.Init(a.IPTablesOutputDropped, b.IPTablesOutputDropped)
 	m.IPTablesPostroutingDropped.Init(a.IPTablesPostroutingDropped, b.IPTablesPostroutingDropped)
 	m.OptionTimestampReceived.Init(a.OptionTimestampReceived, b.OptionTimestampReceived)

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build linux
 // +build linux
 
 // Package fdbased provides the implemention of data-link layer endpoints
@@ -41,11 +42,9 @@ package fdbased
 
 import (
 	"fmt"
-	"math"
 	"sync/atomic"
 
 	"golang.org/x/sys/unix"
-	"gvisor.dev/gvisor/pkg/iovec"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/buffer"
@@ -57,6 +56,7 @@ import (
 // linkDispatcher reads packets from the link FD and dispatches them to the
 // NetworkDispatcher.
 type linkDispatcher interface {
+	stop()
 	dispatch() (bool, tcpip.Error)
 }
 
@@ -139,6 +139,20 @@ type endpoint struct {
 
 	// gsoKind is the supported kind of GSO.
 	gsoKind stack.SupportedGSO
+
+	// maxSyscallHeaderBytes has the same meaning as
+	// Options.MaxSyscallHeaderBytes.
+	maxSyscallHeaderBytes uintptr
+
+	// writevMaxIovs is the maximum number of iovecs that may be passed to
+	// rawfile.NonBlockingWriteIovec, as possibly limited by
+	// maxSyscallHeaderBytes. (No analogous limit is defined for
+	// rawfile.NonBlockingSendMMsg, since in that case the maximum number of
+	// iovecs also depends on the number of mmsghdrs. Instead, if sendBatch
+	// encounters a packet whose iovec count is limited by
+	// maxSyscallHeaderBytes, it falls back to writing the packet using writev
+	// via WritePacket.)
+	writevMaxIovs int
 }
 
 // Options specify the details about the fd-based endpoint to be created.
@@ -187,6 +201,11 @@ type Options struct {
 	// RXChecksumOffload if true, indicates that this endpoints capability
 	// set should include CapabilityRXChecksumOffload.
 	RXChecksumOffload bool
+
+	// If MaxSyscallHeaderBytes is non-zero, it is the maximum number of bytes
+	// of struct iovec, msghdr, and mmsghdr that may be passed by each host
+	// system call.
+	MaxSyscallHeaderBytes int
 }
 
 // fanoutID is used for AF_PACKET based endpoints to enable PACKET_FANOUT
@@ -196,8 +215,12 @@ type Options struct {
 // option for an FD with a fanoutID already in use by another FD for a different
 // NIC will return an EINVAL.
 //
+// Since fanoutID must be unique within the network namespace, we start with
+// the PID to avoid collisions. The only way to be sure of avoiding collisions
+// is to run in a new network namespace.
+//
 // Must be accessed using atomic operations.
-var fanoutID int32 = 0
+var fanoutID int32 = int32(unix.Getpid())
 
 // New creates a new fd-based endpoint.
 //
@@ -232,14 +255,25 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		return nil, fmt.Errorf("opts.FD is empty, at least one FD must be specified")
 	}
 
+	if opts.MaxSyscallHeaderBytes < 0 {
+		return nil, fmt.Errorf("opts.MaxSyscallHeaderBytes is negative")
+	}
+
 	e := &endpoint{
-		fds:                opts.FDs,
-		mtu:                opts.MTU,
-		caps:               caps,
-		closed:             opts.ClosedFunc,
-		addr:               opts.Address,
-		hdrSize:            hdrSize,
-		packetDispatchMode: opts.PacketDispatchMode,
+		fds:                   opts.FDs,
+		mtu:                   opts.MTU,
+		caps:                  caps,
+		closed:                opts.ClosedFunc,
+		addr:                  opts.Address,
+		hdrSize:               hdrSize,
+		packetDispatchMode:    opts.PacketDispatchMode,
+		maxSyscallHeaderBytes: uintptr(opts.MaxSyscallHeaderBytes),
+		writevMaxIovs:         rawfile.MaxIovs,
+	}
+	if e.maxSyscallHeaderBytes != 0 {
+		if max := int(e.maxSyscallHeaderBytes / rawfile.SizeofIovec); max < e.writevMaxIovs {
+			e.writevMaxIovs = max
+		}
 	}
 
 	// Increment fanoutID to ensure that we don't re-use the same fanoutID for
@@ -292,11 +326,6 @@ func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32) (lin
 		}
 		switch sa.(type) {
 		case *unix.SockaddrLinklayer:
-			// See: PACKET_FANOUT_MAX in net/packet/internal.h
-			const packetFanoutMax = 1 << 16
-			if fID > packetFanoutMax {
-				return nil, fmt.Errorf("host fanoutID limit exceeded, fanoutID must be <= %d", math.MaxUint16)
-			}
 			// Enable PACKET_FANOUT mode if the underlying socket is of type
 			// AF_PACKET. We do not enable PACKET_FANOUT_FLAG_DEFRAG as that will
 			// prevent gvisor from receiving fragmented packets and the host does the
@@ -317,7 +346,7 @@ func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32) (lin
 			//
 			// See: https://github.com/torvalds/linux/blob/7acac4b3196caee5e21fb5ea53f8bc124e6a16fc/net/packet/af_packet.c#L3881
 			const fanoutType = unix.PACKET_FANOUT_HASH
-			fanoutArg := int(fID) | fanoutType<<16
+			fanoutArg := (int(fID) & 0xffff) | fanoutType<<16
 			if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_FANOUT, fanoutArg); err != nil {
 				return nil, fmt.Errorf("failed to enable PACKET_FANOUT option: %v", err)
 			}
@@ -353,16 +382,27 @@ func isSocketFD(fd int) (bool, error) {
 // Attach launches the goroutine that reads packets from the file descriptor and
 // dispatches them via the provided dispatcher.
 func (e *endpoint) Attach(dispatcher stack.NetworkDispatcher) {
-	e.dispatcher = dispatcher
-	// Link endpoints are not savable. When transportation endpoints are
-	// saved, they stop sending outgoing packets and all incoming packets
-	// are rejected.
-	for i := range e.inboundDispatchers {
-		e.wg.Add(1)
-		go func(i int) { // S/R-SAFE: See above.
-			e.dispatchLoop(e.inboundDispatchers[i])
-			e.wg.Done()
-		}(i)
+	// nil means the NIC is being removed.
+	if dispatcher == nil && e.dispatcher != nil {
+		for _, dispatcher := range e.inboundDispatchers {
+			dispatcher.stop()
+		}
+		e.Wait()
+		e.dispatcher = nil
+		return
+	}
+	if dispatcher != nil && e.dispatcher == nil {
+		e.dispatcher = dispatcher
+		// Link endpoints are not savable. When transportation endpoints are
+		// saved, they stop sending outgoing packets and all incoming packets
+		// are rejected.
+		for i := range e.inboundDispatchers {
+			e.wg.Add(1)
+			go func(i int) { // S/R-SAFE: See above.
+				e.dispatchLoop(e.inboundDispatchers[i])
+				e.wg.Done()
+			}(i)
+		}
 	}
 }
 
@@ -465,6 +505,9 @@ func (e *endpoint) AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.Net
 	}
 }
 
+// WriteRawPacket implements stack.LinkEndpoint.
+func (*endpoint) WriteRawPacket(*stack.PacketBuffer) tcpip.Error { return &tcpip.ErrNotSupported{} }
+
 // WritePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
 func (e *endpoint) WritePacket(r stack.RouteInfo, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) tcpip.Error {
@@ -472,9 +515,8 @@ func (e *endpoint) WritePacket(r stack.RouteInfo, protocol tcpip.NetworkProtocol
 		e.AddHeader(r.LocalLinkAddress, r.RemoteLinkAddress, protocol, pkt)
 	}
 
-	var builder iovec.Builder
-
 	fd := e.fds[pkt.Hash%uint32(len(e.fds))]
+	var vnetHdrBuf []byte
 	if e.gsoKind == stack.HWGSOSupported {
 		vnetHdr := virtioNetHdr{}
 		if pkt.GSOOptions.Type != stack.GSONone {
@@ -496,71 +538,123 @@ func (e *endpoint) WritePacket(r stack.RouteInfo, protocol tcpip.NetworkProtocol
 				vnetHdr.gsoSize = pkt.GSOOptions.MSS
 			}
 		}
-
-		vnetHdrBuf := vnetHdr.marshal()
-		builder.Add(vnetHdrBuf)
+		vnetHdrBuf = vnetHdr.marshal()
 	}
 
-	for _, v := range pkt.Views() {
-		builder.Add(v)
+	views := pkt.Views()
+	numIovecs := len(views)
+	if len(vnetHdrBuf) != 0 {
+		numIovecs++
 	}
-	return rawfile.NonBlockingWriteIovec(fd, builder.Build())
+	if numIovecs > e.writevMaxIovs {
+		numIovecs = e.writevMaxIovs
+	}
+
+	// Allocate small iovec arrays on the stack.
+	var iovecsArr [8]unix.Iovec
+	iovecs := iovecsArr[:0]
+	if numIovecs > len(iovecsArr) {
+		iovecs = make([]unix.Iovec, 0, numIovecs)
+	}
+	iovecs = rawfile.AppendIovecFromBytes(iovecs, vnetHdrBuf, numIovecs)
+	for _, v := range views {
+		iovecs = rawfile.AppendIovecFromBytes(iovecs, v, numIovecs)
+	}
+	return rawfile.NonBlockingWriteIovec(fd, iovecs)
 }
 
-func (e *endpoint) sendBatch(batchFD int, batch []*stack.PacketBuffer) (int, tcpip.Error) {
+func (e *endpoint) sendBatch(batchFD int, pkts []*stack.PacketBuffer) (int, tcpip.Error) {
 	// Send a batch of packets through batchFD.
-	mmsgHdrs := make([]rawfile.MMsgHdr, 0, len(batch))
-	for _, pkt := range batch {
-		if e.hdrSize > 0 {
-			e.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
-		}
+	mmsgHdrsStorage := make([]rawfile.MMsgHdr, 0, len(pkts))
+	packets := 0
+	for packets < len(pkts) {
+		mmsgHdrs := mmsgHdrsStorage
+		batch := pkts[packets:]
+		syscallHeaderBytes := uintptr(0)
+		for _, pkt := range batch {
+			if e.hdrSize > 0 {
+				e.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
+			}
 
-		var vnetHdrBuf []byte
-		if e.gsoKind == stack.HWGSOSupported {
-			vnetHdr := virtioNetHdr{}
-			if pkt.GSOOptions.Type != stack.GSONone {
-				vnetHdr.hdrLen = uint16(pkt.HeaderSize())
-				if pkt.GSOOptions.NeedsCsum {
-					vnetHdr.flags = _VIRTIO_NET_HDR_F_NEEDS_CSUM
-					vnetHdr.csumStart = header.EthernetMinimumSize + pkt.GSOOptions.L3HdrLen
-					vnetHdr.csumOffset = pkt.GSOOptions.CsumOffset
-				}
-				if pkt.GSOOptions.Type != stack.GSONone && uint16(pkt.Data().Size()) > pkt.GSOOptions.MSS {
-					switch pkt.GSOOptions.Type {
-					case stack.GSOTCPv4:
-						vnetHdr.gsoType = _VIRTIO_NET_HDR_GSO_TCPV4
-					case stack.GSOTCPv6:
-						vnetHdr.gsoType = _VIRTIO_NET_HDR_GSO_TCPV6
-					default:
-						panic(fmt.Sprintf("Unknown gso type: %v", pkt.GSOOptions.Type))
+			var vnetHdrBuf []byte
+			if e.gsoKind == stack.HWGSOSupported {
+				vnetHdr := virtioNetHdr{}
+				if pkt.GSOOptions.Type != stack.GSONone {
+					vnetHdr.hdrLen = uint16(pkt.HeaderSize())
+					if pkt.GSOOptions.NeedsCsum {
+						vnetHdr.flags = _VIRTIO_NET_HDR_F_NEEDS_CSUM
+						vnetHdr.csumStart = header.EthernetMinimumSize + pkt.GSOOptions.L3HdrLen
+						vnetHdr.csumOffset = pkt.GSOOptions.CsumOffset
 					}
-					vnetHdr.gsoSize = pkt.GSOOptions.MSS
+					if pkt.GSOOptions.Type != stack.GSONone && uint16(pkt.Data().Size()) > pkt.GSOOptions.MSS {
+						switch pkt.GSOOptions.Type {
+						case stack.GSOTCPv4:
+							vnetHdr.gsoType = _VIRTIO_NET_HDR_GSO_TCPV4
+						case stack.GSOTCPv6:
+							vnetHdr.gsoType = _VIRTIO_NET_HDR_GSO_TCPV6
+						default:
+							panic(fmt.Sprintf("Unknown gso type: %v", pkt.GSOOptions.Type))
+						}
+						vnetHdr.gsoSize = pkt.GSOOptions.MSS
+					}
+				}
+				vnetHdrBuf = vnetHdr.marshal()
+			}
+
+			views := pkt.Views()
+			numIovecs := len(views)
+			if len(vnetHdrBuf) != 0 {
+				numIovecs++
+			}
+			if numIovecs > rawfile.MaxIovs {
+				numIovecs = rawfile.MaxIovs
+			}
+			if e.maxSyscallHeaderBytes != 0 {
+				syscallHeaderBytes += rawfile.SizeofMMsgHdr + uintptr(numIovecs)*rawfile.SizeofIovec
+				if syscallHeaderBytes > e.maxSyscallHeaderBytes {
+					// We can't fit this packet into this call to sendmmsg().
+					// We could potentially do so if we reduced numIovecs
+					// further, but this might incur considerable extra
+					// copying. Leave it to the next batch instead.
+					break
 				}
 			}
-			vnetHdrBuf = vnetHdr.marshal()
+
+			// We can't easily allocate iovec arrays on the stack here since
+			// they will escape this loop iteration via mmsgHdrs.
+			iovecs := make([]unix.Iovec, 0, numIovecs)
+			iovecs = rawfile.AppendIovecFromBytes(iovecs, vnetHdrBuf, numIovecs)
+			for _, v := range views {
+				iovecs = rawfile.AppendIovecFromBytes(iovecs, v, numIovecs)
+			}
+
+			var mmsgHdr rawfile.MMsgHdr
+			mmsgHdr.Msg.Iov = &iovecs[0]
+			mmsgHdr.Msg.SetIovlen(len(iovecs))
+			mmsgHdrs = append(mmsgHdrs, mmsgHdr)
 		}
 
-		var builder iovec.Builder
-		builder.Add(vnetHdrBuf)
-		for _, v := range pkt.Views() {
-			builder.Add(v)
+		if len(mmsgHdrs) == 0 {
+			// We can't fit batch[0] into a mmsghdr while staying under
+			// e.maxSyscallHeaderBytes. Use WritePacket, which will avoid the
+			// mmsghdr (by using writev) and re-buffer iovecs more aggressively
+			// if necessary (by using e.writevMaxIovs instead of
+			// rawfile.MaxIovs).
+			pkt := batch[0]
+			if err := e.WritePacket(pkt.EgressRoute, pkt.NetworkProtocolNumber, pkt); err != nil {
+				return packets, err
+			}
+			packets++
+		} else {
+			for len(mmsgHdrs) > 0 {
+				sent, err := rawfile.NonBlockingSendMMsg(batchFD, mmsgHdrs)
+				if err != nil {
+					return packets, err
+				}
+				packets += sent
+				mmsgHdrs = mmsgHdrs[sent:]
+			}
 		}
-		iovecs := builder.Build()
-
-		var mmsgHdr rawfile.MMsgHdr
-		mmsgHdr.Msg.Iov = &iovecs[0]
-		mmsgHdr.Msg.SetIovlen((len(iovecs)))
-		mmsgHdrs = append(mmsgHdrs, mmsgHdr)
-	}
-
-	packets := 0
-	for len(mmsgHdrs) > 0 {
-		sent, err := rawfile.NonBlockingSendMMsg(batchFD, mmsgHdrs)
-		if err != nil {
-			return packets, err
-		}
-		packets += sent
-		mmsgHdrs = mmsgHdrs[sent:]
 	}
 
 	return packets, nil
@@ -678,8 +772,9 @@ func NewInjectable(fd int, mtu uint32, capabilities stack.LinkEndpointCapabiliti
 	unix.SetNonblock(fd, true)
 
 	return &InjectableEndpoint{endpoint: endpoint{
-		fds:  []int{fd},
-		mtu:  mtu,
-		caps: capabilities,
+		fds:           []int{fd},
+		mtu:           mtu,
+		caps:          capabilities,
+		writevMaxIovs: rawfile.MaxIovs,
 	}}
 }
