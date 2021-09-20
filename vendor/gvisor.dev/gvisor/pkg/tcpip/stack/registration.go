@@ -55,6 +55,9 @@ type NetworkPacketInfo struct {
 	// LocalAddressBroadcast is true if the packet's local address is a broadcast
 	// address.
 	LocalAddressBroadcast bool
+
+	// IsForwardedPacket is true if the packet is being forwarded.
+	IsForwardedPacket bool
 }
 
 // TransportErrorKind enumerates error types that are handled by the transport
@@ -262,6 +265,11 @@ type TransportDispatcher interface {
 	//
 	// DeliverTransportError takes ownership of the packet buffer.
 	DeliverTransportError(local, remote tcpip.Address, _ tcpip.NetworkProtocolNumber, _ tcpip.TransportProtocolNumber, _ TransportError, _ *PacketBuffer)
+
+	// DeliverRawPacket delivers a packet to any subscribed raw sockets.
+	//
+	// DeliverRawPacket does NOT take ownership of the packet buffer.
+	DeliverRawPacket(tcpip.TransportProtocolNumber, *PacketBuffer)
 }
 
 // PacketLooping specifies where an outbound packet should be sent.
@@ -310,8 +318,7 @@ type PrimaryEndpointBehavior int
 
 const (
 	// CanBePrimaryEndpoint indicates the endpoint can be used as a primary
-	// endpoint for new connections with no local address. This is the
-	// default when calling NIC.AddAddress.
+	// endpoint for new connections with no local address.
 	CanBePrimaryEndpoint PrimaryEndpointBehavior = iota
 
 	// FirstPrimaryEndpoint indicates the endpoint should be the first
@@ -323,6 +330,19 @@ const (
 	// primary endpoint.
 	NeverPrimaryEndpoint
 )
+
+func (peb PrimaryEndpointBehavior) String() string {
+	switch peb {
+	case CanBePrimaryEndpoint:
+		return "CanBePrimaryEndpoint"
+	case FirstPrimaryEndpoint:
+		return "FirstPrimaryEndpoint"
+	case NeverPrimaryEndpoint:
+		return "NeverPrimaryEndpoint"
+	default:
+		panic(fmt.Sprintf("unknown primary endpoint behavior: %d", peb))
+	}
+}
 
 // AddressConfigType is the method used to add an address.
 type AddressConfigType int
@@ -342,6 +362,14 @@ const (
 	// to be valid (or preferred) forever; hence the term temporary.
 	AddressConfigSlaacTemp
 )
+
+// AddressProperties contains additional properties that can be configured when
+// adding an address.
+type AddressProperties struct {
+	PEB        PrimaryEndpointBehavior
+	ConfigType AddressConfigType
+	Deprecated bool
+}
 
 // AssignableAddressEndpoint is a reference counted address endpoint that may be
 // assigned to a NetworkEndpoint.
@@ -417,7 +445,7 @@ const (
 	PermanentExpired
 
 	// Temporary is an endpoint, created on a one-off basis to temporarily
-	// consider the NIC bound an an address that it is not explictiy bound to
+	// consider the NIC bound an an address that it is not explicitly bound to
 	// (such as a permanent address). Its reference count must not be biased by 1
 	// so that the address is removed immediately when references to it are no
 	// longer held.
@@ -449,7 +477,7 @@ type AddressableEndpoint interface {
 	// Returns *tcpip.ErrDuplicateAddress if the address exists.
 	//
 	// Acquires and returns the AddressEndpoint for the added address.
-	AddAndAcquirePermanentAddress(addr tcpip.AddressWithPrefix, peb PrimaryEndpointBehavior, configType AddressConfigType, deprecated bool) (AddressEndpoint, tcpip.Error)
+	AddAndAcquirePermanentAddress(addr tcpip.AddressWithPrefix, properties AddressProperties) (AddressEndpoint, tcpip.Error)
 
 	// RemovePermanentAddress removes the passed address if it is a permanent
 	// address.
@@ -627,7 +655,7 @@ type NetworkEndpoint interface {
 	// HandlePacket takes ownership of pkt.
 	HandlePacket(pkt *PacketBuffer)
 
-	// Close is called when the endpoint is reomved from a stack.
+	// Close is called when the endpoint is removed from a stack.
 	Close()
 
 	// NetworkProtocolNumber returns the tcpip.NetworkProtocolNumber for
@@ -655,9 +683,9 @@ type IPNetworkEndpointStats interface {
 	IPStats() *tcpip.IPStats
 }
 
-// ForwardingNetworkProtocol is a NetworkProtocol that may forward packets.
-type ForwardingNetworkProtocol interface {
-	NetworkProtocol
+// ForwardingNetworkEndpoint is a network endpoint that may forward packets.
+type ForwardingNetworkEndpoint interface {
+	NetworkEndpoint
 
 	// Forwarding returns the forwarding configuration.
 	Forwarding() bool
@@ -676,9 +704,6 @@ type NetworkProtocol interface {
 	// network protocol. The stack automatically drops any packets smaller
 	// than this targeted at this protocol.
 	MinimumPacketSize() int
-
-	// DefaultPrefixLen returns the protocol's default prefix length.
-	DefaultPrefixLen() int
 
 	// ParseAddresses returns the source and destination addresses stored in a
 	// packet of this protocol.
@@ -725,16 +750,6 @@ type NetworkDispatcher interface {
 	//
 	// DeliverNetworkPacket takes ownership of pkt.
 	DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
-
-	// DeliverOutboundPacket is called by link layer when a packet is being
-	// sent out.
-	//
-	// pkt.LinkHeader may or may not be set before calling
-	// DeliverOutboundPacket. Some packets do not have link headers (e.g.
-	// packets sent via loopback), and won't have the field set.
-	//
-	// DeliverOutboundPacket takes ownership of pkt.
-	DeliverOutboundPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
 }
 
 // LinkEndpointCapabilities is the type associated with the capabilities
@@ -838,6 +853,14 @@ type LinkEndpoint interface {
 	// offload is enabled. If it will be used for something else, syscall filters
 	// may need to be updated.
 	WritePackets(RouteInfo, PacketBufferList, tcpip.NetworkProtocolNumber) (int, tcpip.Error)
+
+	// WriteRawPacket writes a packet directly to the link.
+	//
+	// If the link-layer has its own header, the payload must already include the
+	// header.
+	//
+	// WriteRawPacket takes ownership of the packet.
+	WriteRawPacket(*PacketBuffer) tcpip.Error
 }
 
 // InjectableLinkEndpoint is a LinkEndpoint where inbound packets are
@@ -965,7 +988,7 @@ type DuplicateAddressDetector interface {
 	// called with the result of the original DAD request.
 	CheckDuplicateAddress(tcpip.Address, DADCompletionHandler) DADCheckAddressDisposition
 
-	// SetDADConfiguations sets the configurations for DAD.
+	// SetDADConfigurations sets the configurations for DAD.
 	SetDADConfigurations(c DADConfigurations)
 
 	// DuplicateAddressProtocol returns the network protocol the receiver can
@@ -976,7 +999,7 @@ type DuplicateAddressDetector interface {
 // LinkAddressResolver handles link address resolution for a network protocol.
 type LinkAddressResolver interface {
 	// LinkAddressRequest sends a request for the link address of the target
-	// address. The request is broadcasted on the local network if a remote link
+	// address. The request is broadcast on the local network if a remote link
 	// address is not provided.
 	LinkAddressRequest(targetAddr, localAddr tcpip.Address, remoteLinkAddr tcpip.LinkAddress) tcpip.Error
 
@@ -1069,4 +1092,4 @@ type GSOEndpoint interface {
 
 // SoftwareGSOMaxSize is a maximum allowed size of a software GSO segment.
 // This isn't a hard limit, because it is never set into packet headers.
-const SoftwareGSOMaxSize = (1 << 16)
+const SoftwareGSOMaxSize = 1 << 16

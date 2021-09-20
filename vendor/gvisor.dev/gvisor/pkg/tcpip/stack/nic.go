@@ -51,7 +51,7 @@ type nic struct {
 	name    string
 	context NICContext
 
-	stats NICStats
+	stats sharedStats
 
 	// The network endpoints themselves may be modified by calling the interface's
 	// methods, but the map reference and entries must be constant.
@@ -72,38 +72,33 @@ type nic struct {
 		sync.RWMutex
 		spoofing    bool
 		promiscuous bool
-		// packetEPs is protected by mu, but the contained packetEndpointList are
-		// not.
-		packetEPs map[tcpip.NetworkProtocolNumber]*packetEndpointList
+	}
+
+	packetEPs struct {
+		mu sync.RWMutex
+
+		// eps is protected by the mutex, but the values contained in it are not.
+		//
+		// +checklocks:mu
+		eps map[tcpip.NetworkProtocolNumber]*packetEndpointList
 	}
 }
 
-// NICStats hold statistics for a NIC.
-type NICStats struct {
-	Tx DirectionStats
-	Rx DirectionStats
-
-	DisabledRx DirectionStats
-
-	Neighbor NeighborStats
-}
-
-func makeNICStats() NICStats {
-	var s NICStats
-	tcpip.InitStatCounters(reflect.ValueOf(&s).Elem())
-	return s
-}
-
-// DirectionStats includes packet and byte counts.
-type DirectionStats struct {
-	Packets *tcpip.StatCounter
-	Bytes   *tcpip.StatCounter
+// makeNICStats initializes the NIC statistics and associates them to the global
+// NIC statistics.
+func makeNICStats(global tcpip.NICStats) sharedStats {
+	var stats sharedStats
+	tcpip.InitStatCounters(reflect.ValueOf(&stats.local).Elem())
+	stats.init(&stats.local, &global)
+	return stats
 }
 
 type packetEndpointList struct {
 	mu sync.RWMutex
 
 	// eps is protected by mu, but the contained PacketEndpoint values are not.
+	//
+	// +checklocks:mu
 	eps []PacketEndpoint
 }
 
@@ -122,6 +117,12 @@ func (p *packetEndpointList) remove(ep PacketEndpoint) {
 			break
 		}
 	}
+}
+
+func (p *packetEndpointList) len() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.eps)
 }
 
 // forEach calls fn with each endpoints in p while holding the read lock on p.
@@ -150,24 +151,22 @@ func newNIC(stack *Stack, id tcpip.NICID, name string, ep LinkEndpoint, ctx NICC
 		id:                        id,
 		name:                      name,
 		context:                   ctx,
-		stats:                     makeNICStats(),
+		stats:                     makeNICStats(stack.Stats().NICs),
 		networkEndpoints:          make(map[tcpip.NetworkProtocolNumber]NetworkEndpoint),
 		linkAddrResolvers:         make(map[tcpip.NetworkProtocolNumber]*linkResolver),
 		duplicateAddressDetectors: make(map[tcpip.NetworkProtocolNumber]DuplicateAddressDetector),
 	}
 	nic.linkResQueue.init(nic)
-	nic.mu.packetEPs = make(map[tcpip.NetworkProtocolNumber]*packetEndpointList)
+
+	nic.packetEPs.mu.Lock()
+	defer nic.packetEPs.mu.Unlock()
+
+	nic.packetEPs.eps = make(map[tcpip.NetworkProtocolNumber]*packetEndpointList)
 
 	resolutionRequired := ep.Capabilities()&CapabilityResolutionRequired != 0
 
-	// Register supported packet and network endpoint protocols.
-	for _, netProto := range header.Ethertypes {
-		nic.mu.packetEPs[netProto] = new(packetEndpointList)
-	}
 	for _, netProto := range stack.networkProtocols {
 		netNum := netProto.Number()
-		nic.mu.packetEPs[netNum] = new(packetEndpointList)
-
 		netEP := netProto.NewEndpoint(nic, nic)
 		nic.networkEndpoints[netNum] = netEP
 
@@ -378,12 +377,14 @@ func (n *nic) writePacket(r RouteInfo, protocol tcpip.NetworkProtocolNumber, pkt
 
 	pkt.EgressRoute = r
 	pkt.NetworkProtocolNumber = protocol
+	n.deliverOutboundPacket(r.RemoteLinkAddress, pkt)
+
 	if err := n.LinkEndpoint.WritePacket(r, protocol, pkt); err != nil {
 		return err
 	}
 
-	n.stats.Tx.Packets.Increment()
-	n.stats.Tx.Bytes.IncrementBy(uint64(numBytes))
+	n.stats.tx.packets.Increment()
+	n.stats.tx.bytes.IncrementBy(uint64(numBytes))
 	return nil
 }
 
@@ -396,16 +397,17 @@ func (n *nic) writePackets(r RouteInfo, protocol tcpip.NetworkProtocolNumber, pk
 	for pkt := pkts.Front(); pkt != nil; pkt = pkt.Next() {
 		pkt.EgressRoute = r
 		pkt.NetworkProtocolNumber = protocol
+		n.deliverOutboundPacket(r.RemoteLinkAddress, pkt)
 	}
 
 	writtenPackets, err := n.LinkEndpoint.WritePackets(r, pkts, protocol)
-	n.stats.Tx.Packets.IncrementBy(uint64(writtenPackets))
+	n.stats.tx.packets.IncrementBy(uint64(writtenPackets))
 	writtenBytes := 0
 	for i, pb := 0, pkts.Front(); i < writtenPackets && pb != nil; i, pb = i+1, pb.Next() {
 		writtenBytes += pb.Size()
 	}
 
-	n.stats.Tx.Bytes.IncrementBy(uint64(writtenBytes))
+	n.stats.tx.bytes.IncrementBy(uint64(writtenBytes))
 	return writtenPackets, err
 }
 
@@ -514,7 +516,7 @@ func (n *nic) getAddressOrCreateTempInner(protocol tcpip.NetworkProtocolNumber, 
 
 // addAddress adds a new address to n, so that it starts accepting packets
 // targeted at the given address (and network protocol).
-func (n *nic) addAddress(protocolAddress tcpip.ProtocolAddress, peb PrimaryEndpointBehavior) tcpip.Error {
+func (n *nic) addAddress(protocolAddress tcpip.ProtocolAddress, properties AddressProperties) tcpip.Error {
 	ep, ok := n.networkEndpoints[protocolAddress.Protocol]
 	if !ok {
 		return &tcpip.ErrUnknownProtocol{}
@@ -525,7 +527,7 @@ func (n *nic) addAddress(protocolAddress tcpip.ProtocolAddress, peb PrimaryEndpo
 		return &tcpip.ErrNotSupported{}
 	}
 
-	addressEndpoint, err := addressableEndpoint.AddAndAcquirePermanentAddress(protocolAddress.AddressWithPrefix, peb, AddressConfigStatic, false /* deprecated */)
+	addressEndpoint, err := addressableEndpoint.AddAndAcquirePermanentAddress(protocolAddress.AddressWithPrefix, properties)
 	if err == nil {
 		// We have no need for the address endpoint.
 		addressEndpoint.DecRef()
@@ -712,24 +714,20 @@ func (n *nic) isInGroup(addr tcpip.Address) bool {
 // This rule applies only to the slice itself, not to the items of the slice;
 // the ownership of the items is not retained by the caller.
 func (n *nic) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer) {
-	n.mu.RLock()
 	enabled := n.Enabled()
 	// If the NIC is not yet enabled, don't receive any packets.
 	if !enabled {
-		n.mu.RUnlock()
-
-		n.stats.DisabledRx.Packets.Increment()
-		n.stats.DisabledRx.Bytes.IncrementBy(uint64(pkt.Data().Size()))
+		n.stats.disabledRx.packets.Increment()
+		n.stats.disabledRx.bytes.IncrementBy(uint64(pkt.Data().Size()))
 		return
 	}
 
-	n.stats.Rx.Packets.Increment()
-	n.stats.Rx.Bytes.IncrementBy(uint64(pkt.Data().Size()))
+	n.stats.rx.packets.Increment()
+	n.stats.rx.bytes.IncrementBy(uint64(pkt.Data().Size()))
 
 	networkEndpoint, ok := n.networkEndpoints[protocol]
 	if !ok {
-		n.mu.RUnlock()
-		n.stack.stats.UnknownProtocolRcvdPackets.Increment()
+		n.stats.unknownL3ProtocolRcvdPackets.Increment()
 		return
 	}
 
@@ -740,44 +738,87 @@ func (n *nic) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcp
 	}
 	pkt.RXTransportChecksumValidated = n.LinkEndpoint.Capabilities()&CapabilityRXChecksumOffload != 0
 
-	// Are any packet type sockets listening for this network protocol?
-	protoEPs := n.mu.packetEPs[protocol]
-	// Other packet type sockets that are listening for all protocols.
-	anyEPs := n.mu.packetEPs[header.EthernetProtocolAll]
-	n.mu.RUnlock()
-
 	// Deliver to interested packet endpoints without holding NIC lock.
+	var packetEPPkt *PacketBuffer
 	deliverPacketEPs := func(ep PacketEndpoint) {
-		p := pkt.Clone()
-		p.PktType = tcpip.PacketHost
-		ep.HandlePacket(n.id, local, protocol, p)
+		if packetEPPkt == nil {
+			// Packet endpoints hold the full packet.
+			//
+			// We perform a deep copy because higher-level endpoints may point to
+			// the middle of a view that is held by a packet endpoint. Save/Restore
+			// does not support overlapping slices and will panic in this case.
+			//
+			// TODO(https://gvisor.dev/issue/6517): Avoid this copy once S/R supports
+			// overlapping slices (e.g. by passing a shallow copy of pkt to the packet
+			// endpoint).
+			packetEPPkt = NewPacketBuffer(PacketBufferOptions{
+				Data: PayloadSince(pkt.LinkHeader()).ToVectorisedView(),
+			})
+			// If a link header was populated in the original packet buffer, then
+			// populate it in the packet buffer we provide to packet endpoints as
+			// packet endpoints inspect link headers.
+			packetEPPkt.LinkHeader().Consume(pkt.LinkHeader().View().Size())
+			packetEPPkt.PktType = tcpip.PacketHost
+		}
+
+		ep.HandlePacket(n.id, local, protocol, packetEPPkt.Clone())
 	}
-	if protoEPs != nil {
+
+	n.packetEPs.mu.Lock()
+	// Are any packet type sockets listening for this network protocol?
+	protoEPs, protoEPsOK := n.packetEPs.eps[protocol]
+	// Other packet type sockets that are listening for all protocols.
+	anyEPs, anyEPsOK := n.packetEPs.eps[header.EthernetProtocolAll]
+	n.packetEPs.mu.Unlock()
+
+	if protoEPsOK {
 		protoEPs.forEach(deliverPacketEPs)
 	}
-	if anyEPs != nil {
+	if anyEPsOK {
 		anyEPs.forEach(deliverPacketEPs)
 	}
 
 	networkEndpoint.HandlePacket(pkt)
 }
 
-// DeliverOutboundPacket implements NetworkDispatcher.DeliverOutboundPacket.
-func (n *nic) DeliverOutboundPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer) {
-	n.mu.RLock()
+// deliverOutboundPacket delivers outgoing packets to interested endpoints.
+func (n *nic) deliverOutboundPacket(remote tcpip.LinkAddress, pkt *PacketBuffer) {
+	n.packetEPs.mu.RLock()
+	defer n.packetEPs.mu.RUnlock()
 	// We do not deliver to protocol specific packet endpoints as on Linux
 	// only ETH_P_ALL endpoints get outbound packets.
 	// Add any other packet sockets that maybe listening for all protocols.
-	eps := n.mu.packetEPs[header.EthernetProtocolAll]
-	n.mu.RUnlock()
+	eps, ok := n.packetEPs.eps[header.EthernetProtocolAll]
+	if !ok {
+		return
+	}
 
+	local := n.LinkAddress()
+
+	var packetEPPkt *PacketBuffer
 	eps.forEach(func(ep PacketEndpoint) {
-		p := pkt.Clone()
-		p.PktType = tcpip.PacketOutgoing
-		// Add the link layer header as outgoing packets are intercepted
-		// before the link layer header is created.
-		n.LinkEndpoint.AddHeader(local, remote, protocol, p)
-		ep.HandlePacket(n.id, local, protocol, p)
+		if packetEPPkt == nil {
+			// Packet endpoints hold the full packet.
+			//
+			// We perform a deep copy because higher-level endpoints may point to
+			// the middle of a view that is held by a packet endpoint. Save/Restore
+			// does not support overlapping slices and will panic in this case.
+			//
+			// TODO(https://gvisor.dev/issue/6517): Avoid this copy once S/R supports
+			// overlapping slices (e.g. by passing a shallow copy of pkt to the packet
+			// endpoint).
+			packetEPPkt = NewPacketBuffer(PacketBufferOptions{
+				ReserveHeaderBytes: pkt.AvailableHeaderBytes(),
+				Data:               PayloadSince(pkt.NetworkHeader()).ToVectorisedView(),
+			})
+			// Add the link layer header as outgoing packets are intercepted before
+			// the link layer header is created and packet endpoints are interested
+			// in the link header.
+			n.LinkEndpoint.AddHeader(local, remote, pkt.NetworkProtocolNumber, packetEPPkt)
+			packetEPPkt.PktType = tcpip.PacketOutgoing
+		}
+
+		ep.HandlePacket(n.id, local, pkt.NetworkProtocolNumber, packetEPPkt.Clone())
 	})
 }
 
@@ -786,41 +827,35 @@ func (n *nic) DeliverOutboundPacket(remote, local tcpip.LinkAddress, protocol tc
 func (n *nic) DeliverTransportPacket(protocol tcpip.TransportProtocolNumber, pkt *PacketBuffer) TransportPacketDisposition {
 	state, ok := n.stack.transportProtocols[protocol]
 	if !ok {
-		n.stack.stats.UnknownProtocolRcvdPackets.Increment()
+		n.stats.unknownL4ProtocolRcvdPackets.Increment()
 		return TransportPacketProtocolUnreachable
 	}
 
 	transProto := state.proto
 
-	// Raw socket packets are delivered based solely on the transport
-	// protocol number. We do not inspect the payload to ensure it's
-	// validly formed.
-	n.stack.demux.deliverRawPacket(protocol, pkt)
-
 	// TransportHeader is empty only when pkt is an ICMP packet or was reassembled
 	// from fragments.
 	if pkt.TransportHeader().View().IsEmpty() {
-		// TODO(gvisor.dev/issue/170): ICMP packets don't have their TransportHeader
-		// fields set yet, parse it here. See icmp/protocol.go:protocol.Parse for a
-		// full explanation.
+		// ICMP packets don't have their TransportHeader fields set yet, parse it
+		// here. See icmp/protocol.go:protocol.Parse for a full explanation.
 		if protocol == header.ICMPv4ProtocolNumber || protocol == header.ICMPv6ProtocolNumber {
 			// ICMP packets may be longer, but until icmp.Parse is implemented, here
 			// we parse it using the minimum size.
 			if _, ok := pkt.TransportHeader().Consume(transProto.MinimumPacketSize()); !ok {
-				n.stack.stats.MalformedRcvdPackets.Increment()
+				n.stats.malformedL4RcvdPackets.Increment()
 				// We consider a malformed transport packet handled because there is
 				// nothing the caller can do.
 				return TransportPacketHandled
 			}
 		} else if !transProto.Parse(pkt) {
-			n.stack.stats.MalformedRcvdPackets.Increment()
+			n.stats.malformedL4RcvdPackets.Increment()
 			return TransportPacketHandled
 		}
 	}
 
 	srcPort, dstPort, err := transProto.ParsePorts(pkt.TransportHeader().View())
 	if err != nil {
-		n.stack.stats.MalformedRcvdPackets.Increment()
+		n.stats.malformedL4RcvdPackets.Increment()
 		return TransportPacketHandled
 	}
 
@@ -852,7 +887,7 @@ func (n *nic) DeliverTransportPacket(protocol tcpip.TransportProtocolNumber, pkt
 	// If it doesn't handle it then we should do so.
 	switch res := transProto.HandleUnknownDestinationPacket(id, pkt); res {
 	case UnknownDestinationPacketMalformed:
-		n.stack.stats.MalformedRcvdPackets.Increment()
+		n.stats.malformedL4RcvdPackets.Increment()
 		return TransportPacketHandled
 	case UnknownDestinationPacketUnhandled:
 		return TransportPacketDestinationPortUnreachable
@@ -891,6 +926,17 @@ func (n *nic) DeliverTransportError(local, remote tcpip.Address, net tcpip.Netwo
 	}
 }
 
+// DeliverRawPacket implements TransportDispatcher.
+func (n *nic) DeliverRawPacket(protocol tcpip.TransportProtocolNumber, pkt *PacketBuffer) {
+	// For ICMPv4 only we validate the header length for compatibility with
+	// raw(7) ICMP_FILTER. The same check is made in Linux here:
+	// https://github.com/torvalds/linux/blob/70585216/net/ipv4/raw.c#L189.
+	if protocol == header.ICMPv4ProtocolNumber && pkt.TransportHeader().View().Size()+pkt.Data().Size() < header.ICMPv4MinimumSize {
+		return
+	}
+	n.stack.demux.deliverRawPacket(protocol, pkt)
+}
+
 // ID implements NetworkInterface.
 func (n *nic) ID() tcpip.NICID {
 	return n.id
@@ -925,12 +971,13 @@ func (n *nic) setNUDConfigs(protocol tcpip.NetworkProtocolNumber, c NUDConfigura
 }
 
 func (n *nic) registerPacketEndpoint(netProto tcpip.NetworkProtocolNumber, ep PacketEndpoint) tcpip.Error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.packetEPs.mu.Lock()
+	defer n.packetEPs.mu.Unlock()
 
-	eps, ok := n.mu.packetEPs[netProto]
+	eps, ok := n.packetEPs.eps[netProto]
 	if !ok {
-		return &tcpip.ErrNotSupported{}
+		eps = new(packetEndpointList)
+		n.packetEPs.eps[netProto] = eps
 	}
 	eps.add(ep)
 
@@ -938,14 +985,17 @@ func (n *nic) registerPacketEndpoint(netProto tcpip.NetworkProtocolNumber, ep Pa
 }
 
 func (n *nic) unregisterPacketEndpoint(netProto tcpip.NetworkProtocolNumber, ep PacketEndpoint) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.packetEPs.mu.Lock()
+	defer n.packetEPs.mu.Unlock()
 
-	eps, ok := n.mu.packetEPs[netProto]
+	eps, ok := n.packetEPs.eps[netProto]
 	if !ok {
 		return
 	}
 	eps.remove(ep)
+	if eps.len() == 0 {
+		delete(n.packetEPs.eps, netProto)
+	}
 }
 
 // isValidForOutgoing returns true if the endpoint can be used to send out a
@@ -999,4 +1049,33 @@ func (n *nic) checkDuplicateAddress(protocol tcpip.NetworkProtocolNumber, addr t
 	}
 
 	return d.CheckDuplicateAddress(addr, h), nil
+}
+
+func (n *nic) setForwarding(protocol tcpip.NetworkProtocolNumber, enable bool) tcpip.Error {
+	ep := n.getNetworkEndpoint(protocol)
+	if ep == nil {
+		return &tcpip.ErrUnknownProtocol{}
+	}
+
+	forwardingEP, ok := ep.(ForwardingNetworkEndpoint)
+	if !ok {
+		return &tcpip.ErrNotSupported{}
+	}
+
+	forwardingEP.SetForwarding(enable)
+	return nil
+}
+
+func (n *nic) forwarding(protocol tcpip.NetworkProtocolNumber) (bool, tcpip.Error) {
+	ep := n.getNetworkEndpoint(protocol)
+	if ep == nil {
+		return false, &tcpip.ErrUnknownProtocol{}
+	}
+
+	forwardingEP, ok := ep.(ForwardingNetworkEndpoint)
+	if !ok {
+		return false, &tcpip.ErrNotSupported{}
+	}
+
+	return forwardingEP.Forwarding(), nil
 }
