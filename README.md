@@ -2,6 +2,12 @@
 
 netcat version using raw sockets to avoid iptables and/or other OS filtering mechanisms.
 
+### Motivation
+
+Kubernetes environments have a LOT of iptables, hence the necessity to bypass iptables sometimes, for testing, debugging, troubleshooting, ...
+
+![](https://i.imgur.com/ZwEMrbQ.jpg =400x)
+
 ## Requirements
 
 It only works on Linux with a Kernel version > 5.2
@@ -60,6 +66,8 @@ arguments.
 It also creates an ingress queue and attaches an eBPF filter, to drop the traffic of
 the connection directed to the RAW socket, preventing that the host stack drops the
 connection.
+
+More details [here](development.md)
 
 ## References
 
