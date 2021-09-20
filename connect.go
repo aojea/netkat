@@ -389,7 +389,7 @@ func connect(ctx context.Context, args []string) error {
 		return fmt.Errorf("Failed to create userspace NIC: %v", err)
 	}
 
-	ipstack.AddAddress(nicID, protocolNumber, ipToStackAddress(sourceIP))
+	ipstack.SetPromiscuousMode(nicID, true)
 	// use the address as source
 	laddr := tcpip.FullAddress{
 		NIC:  nicID,
